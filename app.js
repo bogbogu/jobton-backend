@@ -2,8 +2,12 @@ import express from "express";
 const app = express();
 import mongoose from "mongoose";
 import "dotenv/config";
-import categoryRoutes from "./src/routes/category.routes.js";
 
+// import routes
+import categoryRoutes from "./src/routes/category.routes.js";
+import authRoutes from "./routes/auth.routes.js";
+
+// db config
 const mongoUri = process.env.MONGO_URI;
 const port = process.env.PORT || 3000;
 
@@ -16,6 +20,7 @@ app.listen(port, () => {
 
 // routes
 app.use("/api/categories", categoryRoutes);
+app.use("/api/auth", authRoutes);
 
 app.get('/', (req, res) => {
     try {
