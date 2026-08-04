@@ -1,6 +1,7 @@
 import User from "../models/user.model.js";
 import bcrypt from "bcryptjs";
 import generateToken from "../utils/generateToken.js";
+import { sendWelcomeEmail } from "../utils/email.service.js";
 
 export const registerUser = async (req, res) => {
     try {
@@ -31,9 +32,25 @@ export const registerUser = async (req, res) => {
 
         const token = generateToken(user._id);
 
+        let emailStatus = "sent";
+
+        try {
+          await sendWelcomeEmail({
+            toEmail: user.email,
+            firstName: user.firstName,
+          });
+        } catch (emailError) {
+          emailStatus = "failed";
+          console.error("Welcome email send failed:", emailError.message);
+        }
+
         return res.status(201).json({
-            message: "User registered successfully.",
+          message:
+            emailStatus === "sent"
+              ? "User registered successfully."
+              : "User registered successfully, but welcome email could not be sent.",
             token,
+          emailStatus,
             user: {
                 id: user._id,
                 firstName: user.firstName,
