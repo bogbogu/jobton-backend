@@ -3,6 +3,7 @@ const app = express();
 import "dotenv/config";
 import connectDB from "./src/config/db.js";
 import cors from "cors";
+import { fileURLToPath } from "url";
 
 
 // import routes
@@ -33,11 +34,13 @@ if (!emailConfigValidation.isValid) {
     );
 }
 
-connectDB().then(() => {
+export const startServer = async () => {
+    await connectDB();
+
     app.listen(port, () => {
         console.log(`Server is running on port ${port}`);
     });
-});
+};
 
 // routes
 app.use("/api/categories", categoryRoutes);
@@ -51,3 +54,11 @@ app.get('/', (req, res) => {
         res.status(500).json({ message: error.message })
     }
 })
+
+const currentFilePath = fileURLToPath(import.meta.url);
+
+if (process.argv[1] === currentFilePath) {
+    startServer();
+}
+
+export default app;
