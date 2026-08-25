@@ -30,7 +30,10 @@ secondary indexes beyond the unique `email` index.
 `title`, `company`, `location`, `description`, `applicationLink` (required
 strings), `domain`, `logoUrl`, `industry`, `experience`, `qualification`
 (optional strings, default `""`), `employmentType` (required enum:
-Full-time/Part-time/Contract/Internship/Temporary/Freelance), `category`
+"Full Time"/"Part Time"/Contract/Internship/Temporary/Freelance — spelled
+to match the frontend's `jobTypeOptions` wording verbatim, not the more
+conventional "Full-time"/"Part-time"), a separate nullable
+`workArrangement` (On-site/Remote/Hybrid), `category`
 (required string — role/function taxonomy for "browse by category," distinct
 from `industry` which is the employer's sector), `status` (array of enum
 tags: featured/verified/urgent/new, default `[]`), `skills`/

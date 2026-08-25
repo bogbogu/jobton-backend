@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 const SALARY_CURRENCIES = ["NGN", "USD"];
 const SALARY_PERIODS = ["hour", "month", "year"];
+const WORK_ARRANGEMENTS = ["On-site", "Remote", "Hybrid"];
 
 const JobSchema = new mongoose.Schema(
   {
@@ -34,17 +35,30 @@ const JobSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // Spelled "Full Time"/"Part Time" (not "Full-time"/"Part-time") to match
+    // the frontend's existing jobTypeOptions wording exactly — the API
+    // returns and filters on this value verbatim, no translation layer.
     employmentType: {
       type: String,
       required: true,
       enum: [
-        "Full-time",
-        "Part-time",
+        "Full Time",
+        "Part Time",
         "Contract",
         "Internship",
         "Temporary",
         "Freelance",
       ],
+    },
+
+    // Separate from `employmentType` on purpose: a job can be Full-time AND
+    // Hybrid at the same time. The frontend's mock data used to conflate
+    // these into one `type` field ("Full Time", "On-site", "Contract",
+    // "Hybrid") — nullable since not every posting specifies it.
+    workArrangement: {
+      type: String,
+      enum: WORK_ARRANGEMENTS,
+      default: null,
     },
 
     // Structured so the API can sort/filter by salary; `salary` display
@@ -155,6 +169,7 @@ JobSchema.index({ industry: 1 });
 
 export const JOB_SALARY_CURRENCIES = SALARY_CURRENCIES;
 export const JOB_SALARY_PERIODS = SALARY_PERIODS;
+export const JOB_WORK_ARRANGEMENTS = WORK_ARRANGEMENTS;
 
 const Job = mongoose.model("Job", JobSchema);
 

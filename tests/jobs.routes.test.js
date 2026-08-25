@@ -28,7 +28,7 @@ const validJobPayload = (overrides = {}) => ({
   company: "Flutterwave",
   domain: "flutterwave.com",
   location: "Lagos, Nigeria (Remote)",
-  employmentType: "Full-time",
+  employmentType: "Full Time",
   salaryMin: 800000,
   salaryCurrency: "NGN",
   salaryPeriod: "month",
@@ -83,7 +83,7 @@ describe("Job routes", () => {
     expect(response.body.job).toMatchObject({
       title: "Senior Product Designer",
       company: "Flutterwave",
-      type: "Full-time",
+      type: "Full Time",
       salary: "₦800,000 / month",
       category: "Design",
       applicants: 0,
@@ -115,6 +115,45 @@ describe("Job routes", () => {
     expect(response.body.job.salary).toBe("$2,000 – $2,500 / month");
   });
 
+  it("stores and returns workArrangement separately from employmentType", async () => {
+    const { token } = await createUserWithToken();
+
+    const response = await request(app)
+      .post("/api/jobs")
+      .set("Authorization", `Bearer ${token}`)
+      .send(validJobPayload({ employmentType: "Full Time", workArrangement: "Hybrid" }));
+
+    expect(response.body.job.type).toBe("Full Time");
+    expect(response.body.job.workArrangement).toBe("Hybrid");
+  });
+
+  it("filters by `type` against either employmentType or workArrangement", async () => {
+    const { token } = await createUserWithToken();
+
+    // Full Time + Hybrid — matching the frontend's "Hybrid" filter option
+    // even though that's a work arrangement, not an employment type.
+    await Job.create({ ...validJobPayload({ title: "Hybrid Role" }), employmentType: "Full Time", workArrangement: "Hybrid" });
+    await Job.create({ ...validJobPayload({ title: "Fully Remote Role" }), employmentType: "Full Time", workArrangement: "Remote" });
+
+    const response = await request(app).get("/api/jobs").query({ type: "Hybrid" });
+
+    expect(response.body.jobs).toHaveLength(1);
+    expect(response.body.jobs[0].title).toBe("Hybrid Role");
+  });
+
+  it("combines keyword and type filters correctly (regression: $or key collision)", async () => {
+    const { token } = await createUserWithToken();
+    void token;
+
+    await Job.create({ ...validJobPayload({ title: "Remote Backend Engineer" }), employmentType: "Contract", workArrangement: "Remote" });
+    await Job.create({ ...validJobPayload({ title: "Remote Product Designer" }), employmentType: "Full Time", workArrangement: "Remote" });
+
+    const response = await request(app).get("/api/jobs").query({ keyword: "Backend", type: "Remote" });
+
+    expect(response.body.jobs).toHaveLength(1);
+    expect(response.body.jobs[0].title).toBe("Remote Backend Engineer");
+  });
+
   it("filters jobs by keyword, type, industry, and category", async () => {
     const { token } = await createUserWithToken();
 
@@ -122,7 +161,7 @@ describe("Job routes", () => {
       validJobPayload({ title: "Backend Engineer", category: "Engineering", industry: "Fintech", employmentType: "Contract" })
     );
     await request(app).post("/api/jobs").set("Authorization", `Bearer ${token}`).send(
-      validJobPayload({ title: "Product Designer", category: "Design", industry: "Technology", employmentType: "Full-time" })
+      validJobPayload({ title: "Product Designer", category: "Design", industry: "Technology", employmentType: "Full Time" })
     );
 
     const byKeyword = await request(app).get("/api/jobs").query({ keyword: "Backend" });

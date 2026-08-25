@@ -22,6 +22,7 @@ export const serializeJob = (job) => ({
   title: job.title,
   location: job.location,
   type: job.employmentType,
+  workArrangement: job.workArrangement || null,
   salary: formatSalaryDisplay(job),
   category: job.category,
   status: job.status,
@@ -39,31 +40,34 @@ export const serializeJob = (job) => ({
 });
 
 const buildJobFilter = (query) => {
-  const filter = {};
+  const conditions = [];
   const { keyword, location, type, industry, category } = query;
 
   if (keyword) {
     const pattern = new RegExp(escapeRegExp(String(keyword).trim()), "i");
-    filter.$or = [{ title: pattern }, { company: pattern }, { skills: pattern }];
+    conditions.push({ $or: [{ title: pattern }, { company: pattern }, { skills: pattern }] });
   }
 
   if (location) {
-    filter.location = new RegExp(escapeRegExp(String(location).trim()), "i");
+    conditions.push({ location: new RegExp(escapeRegExp(String(location).trim()), "i") });
   }
 
   if (type) {
-    filter.employmentType = type;
+    // `type` matches either employment type (Full-time/Contract/...) or
+    // work arrangement (Remote/On-site/Hybrid) — the frontend's job-type
+    // filter dropdown mixes both taxonomies into one list.
+    conditions.push({ $or: [{ employmentType: type }, { workArrangement: type }] });
   }
 
   if (industry) {
-    filter.industry = industry;
+    conditions.push({ industry });
   }
 
   if (category) {
-    filter.category = category;
+    conditions.push({ category });
   }
 
-  return filter;
+  return conditions.length ? { $and: conditions } : {};
 };
 
 const parsePagination = (query) => {
@@ -141,6 +145,7 @@ export const createJob = async (req, res) => {
       logoUrl,
       location,
       employmentType,
+      workArrangement,
       salaryMin,
       salaryMax,
       salaryCurrency,
@@ -179,6 +184,7 @@ export const createJob = async (req, res) => {
       logoUrl,
       location,
       employmentType,
+      workArrangement,
       salaryMin,
       salaryMax,
       salaryCurrency,
@@ -219,6 +225,7 @@ const UPDATABLE_JOB_FIELDS = [
   "logoUrl",
   "location",
   "employmentType",
+  "workArrangement",
   "salaryMin",
   "salaryMax",
   "salaryCurrency",
