@@ -2,6 +2,7 @@ import request from "supertest";
 import mongoose from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import generateToken from "../src/utils/generateToken.js";
 
 vi.mock("../src/utils/email.service.js", () => {
   return {
@@ -390,5 +391,18 @@ describe("Auth routes", () => {
 
     expect(resetResponse.status).toBe(200);
     expect(resetResponse.body.message).toBe("Password reset successful.");
+  });
+
+  it("GET /me should reject a token whose user no longer exists", async () => {
+    const user = await createVerifiedUser({
+      email: "deleted-user@example.com",
+      passwordHash: "$2a$10$eBv3z6r8E0FQn2mM1gM4QeSxwE5jQhTs6f6lJ7mUv7zNli3WfYB0m",
+    });
+    const token = generateToken(user._id);
+    await User.deleteOne({ _id: user._id });
+
+    const response = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${token}`);
+
+    expect(response.status).toBe(401);
   });
 });

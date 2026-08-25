@@ -9,6 +9,8 @@ import { fileURLToPath } from "url";
 // import routes
 import categoryRoutes from "./src/routes/category.routes.js";
 import authRoutes from "./src/routes/auth.routes.js";
+import jobRoutes from "./src/routes/job.route.js";
+import freelancerRoutes from "./src/routes/freelancer.routes.js";
 import { validateEmailConfig } from "./src/utils/email.service.js";
 
 const port = process.env.PORT || 3000;
@@ -45,6 +47,8 @@ export const startServer = async () => {
 // routes
 app.use("/api/categories", categoryRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/jobs", jobRoutes);
+app.use("/api/freelancers", freelancerRoutes);
 
 app.get('/', (req, res) => {
     try {

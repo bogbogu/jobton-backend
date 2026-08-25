@@ -10,7 +10,11 @@ export default defineConfig({
       reporter: ["text", "html"],
       include: [
         "src/controllers/auth.controller.js",
+        "src/controllers/job.controller.js",
+        "src/controllers/freelancer.controller.js",
+        "src/controllers/category.controller.js",
         "src/utils/authToken.utils.js",
+        "src/utils/format.utils.js",
       ],
     },
   },
