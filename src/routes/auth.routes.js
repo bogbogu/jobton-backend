@@ -12,12 +12,16 @@ import {
 
 import protect from "../middleware/auth.middleware.js";
 import resendVerificationThrottle from "../middleware/resendVerificationThrottle.middleware.js";
+import {
+  loginRateLimiter,
+  registerRateLimiter,
+} from "../middleware/authRateLimit.middleware.js";
 
 const router = express.Router();
 
-router.post("/register", registerUser);
+router.post("/register", registerRateLimiter, registerUser);
 
-router.post("/login", loginUser);
+router.post("/login", loginRateLimiter, loginUser);
 
 router.post("/verify-email", verifyEmail);
 

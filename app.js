@@ -3,6 +3,7 @@ const app = express();
 import "dotenv/config";
 import connectDB from "./src/config/db.js";
 import cors from "cors";
+import helmet from "helmet";
 import { fileURLToPath } from "url";
 
 
@@ -15,9 +16,28 @@ import { validateEmailConfig } from "./src/utils/email.service.js";
 
 const port = process.env.PORT || 3000;
 
+// Allow-list of trusted frontend origins, built from FRONTEND_URL (supports
+// a comma-separated list, e.g. local dev + deployed frontend).
+const allowedOrigins = String(process.env.FRONTEND_URL || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
 // middleware
+app.use(helmet());
 app.use(cors({
-    origin: true,
+    origin: (origin, callback) => {
+        // No Origin header (e.g. same-origin requests, curl, Supertest) —
+        // not a cross-origin browser request, so nothing to restrict here.
+        if (!origin || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+
+        // Fail closed without throwing: the cors middleware simply omits
+        // the CORS headers, so the browser blocks the response client-side
+        // instead of an uncaught error leaking a stack trace to the client.
+        return callback(null, false);
+    },
     credentials: true,
 }));
 app.use(express.json());

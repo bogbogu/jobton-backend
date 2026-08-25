@@ -35,9 +35,11 @@ auth, job listings, and a freelancer directory, all live.
   created records without a specific owner remain admin-only to modify.
   Still no Employer/Company or Application model — see "Areas likely to
   need architectural attention" below.
-- **Tests**: 40 passing tests, 5 files (`tests/*.test.js`) — auth (23,
-  pre-existing), jobs, freelancers, and categories (17, new). Run with
-  `npm test`.
+- **Tests**: 46 passing tests, 5 files (`tests/*.test.js`) —
+  `auth.routes.test.js` (23, up from 18 after the 2026-08-25
+  security-hardening pass added password-policy, NoSQL-injection-casting,
+  and rate-limit regression tests), `auth-token-utils.test.js` (6), and jobs,
+  freelancers, and categories (17 combined, unchanged). Run with `npm test`.
 
 ## Verified architectural findings (read this before proposing changes)
 
@@ -67,37 +69,47 @@ auth, job listings, and a freelancer directory, all live.
    anyway — this was a prerequisite for the new ownership-check middleware
    (`requireJobOwner`/`requireFreelancerOwner`), which assumes `req.user` is
    always a real document once `protect` has run.
-3. **Password policy is inconsistent between register and reset.** The schema
-   only enforces `minlength: 6` (`src/models/user.model.js:28`). The stronger
-   policy in `validatePasswordPolicy` (8+ chars, at least one letter and one
-   digit — `src/utils/authToken.utils.js:49`) is only invoked in
-   `resetPassword`, **not** in `registerUser`. A user can register with a
-   6-character password that would be rejected on reset.
-4. **Inconsistent input casting is a NoSQL-injection surface.** `forgotPassword`,
-   `verifyEmail`, and `resendVerificationEmail` all cast the incoming email with
-   `String(email).toLowerCase().trim()` before querying. `registerUser` and
-   `loginUser` do not — they pass `req.body.email` straight into
-   `User.findOne({ email })`. Since Express parses JSON bodies, a malicious
-   client can send `email` as an object (e.g. a Mongo operator) instead of a
-   string. This needs a Security Engineer review and a consistent fix across
-   all five entry points.
-5. **CORS is effectively wide open with credentials enabled.**
-   `cors({ origin: true, credentials: true })` in `app.js` reflects whatever
-   `Origin` header the caller sends and allows credentialed requests from it.
-   `FRONTEND_URL` already exists as an env var (used to build email links) but
-   is not used to restrict CORS. Worth tightening once the real frontend
-   origin(s) are known.
-6. **No rate limiting on `/login` or `/register`.** Only
-   `/api/auth/resend-verification` is throttled
-   (`src/middleware/resendVerificationThrottle.middleware.js`), and that
-   throttle is an in-memory `Map` — it resets on every process restart and
-   does not share state across multiple server instances, so it won't hold up
-   behind a load balancer or in a multi-replica deployment. `/login` has no
-   brute-force protection at all.
-7. **No security-hardening middleware installed.** No `helmet`, no
-   `express-rate-limit`, no centralized error handler, no request logger
-   (morgan/pino/winston). Every controller repeats its own
-   `try/catch` → `console.error` → generic 500 pattern.
+3. **Resolved (2026-08-25): Password policy is now consistent between
+   register and reset.** `registerUser` now calls the same
+   `validatePasswordPolicy` (8+ chars, at least one letter and one digit —
+   `src/utils/authToken.utils.js:49`) that `resetPassword` already used,
+   returning the same `{ message, error: "INVALID_PASSWORD" }` shape. Schema
+   `minlength: 6` (`src/models/user.model.js:28`) remains as a floor, not the
+   only check.
+4. **Resolved (2026-08-25): Inconsistent input casting (NoSQL-injection
+   surface) fixed.** `registerUser` and `loginUser` now cast
+   `String(email).toLowerCase().trim()` before querying/creating, matching
+   `forgotPassword`, `verifyEmail`, and `resendVerificationEmail`. All five
+   entry points are consistent. Regression tests in
+   `tests/auth.routes.test.js` send `email: { $ne: null }` to both endpoints
+   and confirm it's coerced to a harmless literal string rather than
+   interpreted as a Mongo query operator.
+5. **Resolved (2026-08-25): CORS is no longer wide open.**
+   `cors({ origin: true, credentials: true })` in `app.js` was replaced with
+   an explicit allow-list built from `FRONTEND_URL` (comma-separated list
+   supported). Requests without an `Origin` header (curl, Supertest,
+   server-to-server) are unaffected. A disallowed origin gets
+   `callback(null, false)` (no CORS headers, request still processed
+   server-side per how `cors`/browsers actually enforce this) rather than a
+   thrown error — throwing was tried first and produced an uncaught 500 with
+   a leaked stack trace, which is exactly the class of bug finding #7 below
+   warns about, so the safer non-throwing form was used instead.
+6. **Resolved (2026-08-25): Rate limiting added to `/login` and
+   `/register`.** New `src/middleware/authRateLimit.middleware.js` (
+   `express-rate-limit`, in-memory `MemoryStore` per route) limits to 10
+   requests/15min per IP on `/login` and 10 requests/hour per IP on
+   `/register`, returning `429 { message, error: "RATE_LIMITED" }`. Still
+   in-memory like the pre-existing `resendVerificationThrottle` — resets on
+   restart, no shared store across instances. That gap (distributed-safe
+   rate limiting) is unchanged and still listed under "Areas likely to need
+   architectural attention" below.
+7. **Resolved (2026-08-25): `helmet` added** (default config) for standard
+   security headers. `express-rate-limit` also now in use (see #6). Still no
+   centralized error handler or request logger — every controller still
+   repeats its own `try/catch` → `console.error` → generic 500 pattern; see
+   #5 above for one concrete case (the CORS origin check) where an
+   uncaught-error path was found and fixed opportunistically while wiring
+   this up. A general centralized error handler remains unbuilt.
 8. **No request-body validation library.** Validation is manual per-field
    truthy checks in controllers. `validator` (the npm package) is only used
    inside `email.service.js` to sanity-check env-configured addresses/URLs,

@@ -23,6 +23,9 @@ const {
   __resetResendThrottleStores,
 } = await import("../src/middleware/resendVerificationThrottle.middleware.js");
 const {
+  __resetAuthRateLimitStores,
+} = await import("../src/middleware/authRateLimit.middleware.js");
+const {
   sendVerificationEmail,
   sendResetPasswordEmail,
 } = await import("../src/utils/email.service.js");
@@ -53,6 +56,7 @@ beforeAll(async () => {
 afterEach(async () => {
   vi.clearAllMocks();
   __resetResendThrottleStores();
+  __resetAuthRateLimitStores();
   await User.deleteMany({});
 });
 
@@ -404,5 +408,110 @@ describe("Auth routes", () => {
     const response = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${token}`);
 
     expect(response.status).toBe(401);
+  });
+
+  it("register should enforce the same password policy as reset-password", async () => {
+    const response = await request(app).post("/api/auth/register").send({
+      firstName: "Weak",
+      lastName: "Password",
+      email: "weak-password@example.com",
+      password: "weak",
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("INVALID_PASSWORD");
+
+    const createdUser = await User.findOne({ email: "weak-password@example.com" });
+    expect(createdUser).toBeNull();
+  });
+
+  it("login should treat an object-shaped email as a plain (non-matching) string, not a query operator", async () => {
+    await createVerifiedUser({
+      email: "victim@example.com",
+      passwordHash:
+        "$2a$10$TO4kL8QiRkWvAf0x8zrwEelz9eKcm6jWnLmZ8g8uhtjVfKq7H4VTu",
+    });
+
+    const response = await request(app).post("/api/auth/login").send({
+      email: { $ne: null },
+      password: "whatever",
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.body.token).toBeUndefined();
+  });
+
+  it("register should treat an object-shaped email as a plain (non-matching) string, not a query operator", async () => {
+    await createVerifiedUser({
+      email: "existing@example.com",
+      passwordHash:
+        "$2a$10$TO4kL8QiRkWvAf0x8zrwEelz9eKcm6jWnLmZ8g8uhtjVfKq7H4VTu",
+    });
+
+    const response = await request(app).post("/api/auth/register").send({
+      firstName: "Attacker",
+      lastName: "Injection",
+      email: { $ne: null },
+      password: "Strong123",
+    });
+
+    // Should not match/collide with the existing user via the injected
+    // operator — it should be coerced to a harmless literal string instead.
+    expect(response.status).not.toBe(500);
+    expect(response.body.message).not.toBe("Email already exists.");
+  });
+
+  it("login should be rate-limited after repeated attempts from the same client", async () => {
+    await createVerifiedUser({
+      email: "bruteforce@example.com",
+      passwordHash:
+        "$2a$10$TO4kL8QiRkWvAf0x8zrwEelz9eKcm6jWnLmZ8g8uhtjVfKq7H4VTu",
+    });
+
+    let lastResponse;
+
+    for (let i = 0; i < 10; i += 1) {
+      lastResponse = await request(app).post("/api/auth/login").send({
+        email: "bruteforce@example.com",
+        password: "wrong-password",
+      });
+
+      expect(lastResponse.status).toBe(401);
+    }
+
+    const blockedResponse = await request(app).post("/api/auth/login").send({
+      email: "bruteforce@example.com",
+      password: "wrong-password",
+    });
+
+    expect(blockedResponse.status).toBe(429);
+    expect(blockedResponse.body.error).toBe("RATE_LIMITED");
+  });
+
+  it("register should be rate-limited after repeated attempts from the same client", async () => {
+    let lastResponse;
+
+    for (let i = 0; i < 10; i += 1) {
+      lastResponse = await request(app)
+        .post("/api/auth/register")
+        .send({
+          firstName: "Spam",
+          lastName: `User${i}`,
+          email: `spam-user-${i}@example.com`,
+          password: "Strong123",
+        });
+
+      expect(lastResponse.status).toBe(201);
+    }
+
+    const blockedResponse = await request(app).post("/api/auth/register").send({
+      firstName: "Spam",
+      lastName: "Overflow",
+      email: "spam-overflow@example.com",
+      password: "Strong123",
+    });
+
+    expect(blockedResponse.status).toBe(429);
+    expect(blockedResponse.body.error).toBe("RATE_LIMITED");
   });
 });
