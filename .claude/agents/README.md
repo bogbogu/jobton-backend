@@ -18,8 +18,9 @@ auth, job listings, and a freelancer directory, all live.
   MongoDB (Atlas, `mongodb+srv://`), bcryptjs, jsonwebtoken, Resend (transactional
   email), validator.js. Test stack: Vitest + Supertest + mongodb-memory-server.
 - **Entry point**: [`app.js`](../../app.js) — builds the Express app, applies
-  `cors({ origin: true, credentials: true })`, `express.json()`,
-  `express.urlencoded()`, validates email env config at boot (warns only, does
+  `helmet()`, an allow-listed CORS policy (built from `FRONTEND_URL`),
+  `express.json()`, `express.urlencoded()`, validates email env config at
+  boot (warns only, does
   not block startup), mounts routes, and exports both `app` (default) and an
   async `startServer()`. The app only auto-listens when run directly
   (`process.argv[1] === currentFilePath`), which is why tests import `app.js`
