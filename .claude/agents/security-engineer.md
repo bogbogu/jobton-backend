@@ -12,51 +12,63 @@ handling right before that data exists, not after.
 
 ## Verified findings — current known risks (confirmed by direct inspection, not assumption)
 
-1. **CORS is effectively open with credentials enabled.** `app.js`:
-   `cors({ origin: true, credentials: true })` reflects any request's
-   `Origin` header back as allowed and permits credentialed requests from it.
-   `FRONTEND_URL` already exists as an env var (used for email links) but is
-   never used to restrict CORS. Recommend replacing `origin: true` with an
-   explicit allow-list derived from `FRONTEND_URL` (plus any other known
-   frontend origins) once those are confirmed with the team — don't do this
-   silently since it can break a legitimate frontend origin that wasn't
-   accounted for.
-2. **Inconsistent input casting is a NoSQL-injection surface.**
-   `registerUser` and `loginUser` (`src/controllers/auth.controller.js`) pass
-   `req.body.email` directly into `User.findOne({ email })` without casting
-   to `String` first. `forgotPassword`, `verifyEmail`, and
-   `resendVerificationEmail` do cast (`String(email).toLowerCase().trim()`).
-   Because Express parses JSON bodies, `email` can arrive as an object (e.g.
-   a Mongo query operator) rather than a string. Verify exploitability and
-   fix by casting/validating `email` as a string in all five auth entry
-   points consistently — don't just patch the two obviously missing ones
-   without confirming the other three do it correctly too.
-3. **No rate limiting on `/login` or `/register`.** Only
-   `/api/auth/resend-verification` is throttled, via
-   `src/middleware/resendVerificationThrottle.middleware.js` — an in-memory
-   `Map`-based limiter (15/10min per IP, 5/30min per email). This has two
-   problems: (a) `/login` has zero brute-force protection, and (b) even the
-   existing throttle resets on process restart and won't hold up across
-   multiple server instances (no shared store). Recommend `express-rate-limit`
-   (or equivalent) on `/login` and `/register` at minimum, and flag the
-   in-memory throttle as needing a shared backing store (Redis or similar)
-   before this ever runs with more than one instance.
-4. **No security-hardening middleware installed at all** — no `helmet`
-   (missing security headers: `X-Content-Type-Options`,
-   `Strict-Transport-Security`, `X-Frame-Options`, etc.), no
-   `express-rate-limit`, no centralized error handler that could leak stack
-   traces if a controller's try/catch is ever bypassed.
+1. **Resolved (2026-08-25): CORS is no longer wide open.** `app.js` replaced
+   `cors({ origin: true, credentials: true })` with an explicit allow-list
+   derived from `FRONTEND_URL` (comma-separated list supported, e.g. local
+   dev + deployed frontend). Requests with no `Origin` header (curl,
+   server-to-server, Supertest) are unaffected — the allow-list only governs
+   browser cross-origin requests that send an `Origin` header. A disallowed
+   origin is rejected via `callback(null, false)` (no CORS headers set) —
+   deliberately not `callback(new Error(...))`, since that throws and was
+   observed to produce an uncaught 500 with a leaked stack trace in the
+   `cors` package's default error path. Verified manually: no-Origin request
+   → 200, allowed origin → 200 with matching
+   `Access-Control-Allow-Origin`, disallowed origin → 200 with no
+   `Access-Control-Allow-Origin` header (browser blocks client-side, server
+   doesn't crash).
+2. **Resolved (2026-08-25): Inconsistent input casting (NoSQL-injection
+   surface) fixed.** `registerUser` and `loginUser`
+   (`src/controllers/auth.controller.js`) now cast
+   `String(email).toLowerCase().trim()` before querying/creating, matching
+   `forgotPassword`, `verifyEmail`, and `resendVerificationEmail`. All five
+   auth entry points are now consistent. Regression tests added in
+   `tests/auth.routes.test.js` sending `email: { $ne: null }` to both
+   `/login` and `/register`, confirming the object is coerced to a harmless
+   literal string rather than interpreted as a Mongo query operator.
+3. **Resolved (2026-08-25): Rate limiting added to `/login` and
+   `/register`.** New `src/middleware/authRateLimit.middleware.js` uses
+   `express-rate-limit` (in-memory `MemoryStore`, one instance per route) —
+   10 requests/15min per IP on `/login`, 10 requests/hour per IP on
+   `/register`, both returning `429 { message, error: "RATE_LIMITED" }`.
+   Note: this is still in-memory like the pre-existing
+   `resendVerificationThrottle` — it resets on process restart and doesn't
+   share state across multiple instances. Flagging a shared backing store
+   (Redis or similar) as still needed before this runs behind more than one
+   instance/replica remains an open recommendation (see "Areas likely to
+   need architectural attention" in `README.md`).
+4. **Resolved (2026-08-25): `helmet` added** in `app.js` (default
+   configuration — no customization needed for this API-only server) for
+   standard security headers (`X-Content-Type-Options`,
+   `Strict-Transport-Security`, etc.). `express-rate-limit` also now in use
+   (see #3). Still no centralized error handler that could leak stack traces
+   if a controller's try/catch is ever bypassed — see the CORS fix in #1
+   above for one concrete instance of this class of bug that was found and
+   fixed opportunistically; a general centralized error handler is still
+   worth doing as the app grows.
 5. **Resolved (2026-08-25): `protect` middleware now verifies the user
    still exists** — it returns `401` if `User.findById(decoded.id)` comes
    back `null`, instead of setting `req.user = null` and calling `next()`
    anyway. This was needed as a prerequisite for the new
    `requireJobOwner`/`requireFreelancerOwner` middleware, which assume
    `req.user` is always a real document once `protect` has run.
-6. **Password policy is weaker on register than on reset.** Schema-level
-   `minlength: 6` (`src/models/user.model.js:28`) is the only check in
-   `registerUser`; `validatePasswordPolicy` (8+ chars, letter + digit,
-   `src/utils/authToken.utils.js:49`) is only invoked in `resetPassword`.
-   Recommend applying the same policy at registration.
+6. **Resolved (2026-08-25): Password policy is now consistent between
+   register and reset.** `registerUser` now calls `validatePasswordPolicy`
+   (`src/utils/authToken.utils.js:49`) before creating the user, returning
+   the same `{ message, error: "INVALID_PASSWORD" }` shape `resetPassword`
+   already used. Schema-level `minlength: 6`
+   (`src/models/user.model.js:28`) is now just a floor under the stronger
+   application-level check, not the only gate. Covered by a new test in
+   `tests/auth.routes.test.js`.
 7. **`.env.example` doesn't document required secrets.** It lists only
    `MONGO_URI` and `PORT`, while the app requires `JWT_SECRET`,
    `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `RESEND_TO_EMAIL`, and

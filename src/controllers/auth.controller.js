@@ -28,7 +28,18 @@ export const registerUser = async (req, res) => {
             });
         }
 
-        const existingUser = await User.findOne({ email });
+        const passwordValidation = validatePasswordPolicy(password);
+
+        if (!passwordValidation.isValid) {
+            return res.status(400).json({
+                message: passwordValidation.message,
+                error: "INVALID_PASSWORD",
+            });
+        }
+
+        const normalizedEmail = String(email).toLowerCase().trim();
+
+        const existingUser = await User.findOne({ email: normalizedEmail });
 
         if (existingUser) {
             return res.status(400).json({
@@ -42,7 +53,7 @@ export const registerUser = async (req, res) => {
         const user = await User.create({
             firstName,
             lastName,
-            email,
+            email: normalizedEmail,
             password: hashedPassword,
           emailVerificationToken: verificationData.verificationTokenHash,
           emailVerificationCode: verificationData.verificationCodeHash,
@@ -102,7 +113,8 @@ export const loginUser = async (req, res) => {
     }
 
     // Find user
-    const user = await User.findOne({ email }).select("+password");
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const user = await User.findOne({ email: normalizedEmail }).select("+password");
 
     if (!user) {
       return res.status(401).json({
