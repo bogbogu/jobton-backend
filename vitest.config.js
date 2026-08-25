@@ -9,6 +9,7 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "html"],
       include: [
+        "app.js",
         "src/controllers/auth.controller.js",
         "src/controllers/job.controller.js",
         "src/controllers/freelancer.controller.js",

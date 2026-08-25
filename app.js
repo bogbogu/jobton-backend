@@ -16,11 +16,17 @@ import { validateEmailConfig } from "./src/utils/email.service.js";
 
 const port = process.env.PORT || 3000;
 
-// Allow-list of trusted frontend origins, built from FRONTEND_URL (supports
-// a comma-separated list, e.g. local dev + deployed frontend).
-const allowedOrigins = String(process.env.FRONTEND_URL || "")
+// Allow-list of trusted frontend origins. CORS_ALLOWED_ORIGINS supports a
+// comma-separated list (e.g. local dev + deployed frontend); if it's unset,
+// fall back to FRONTEND_URL alone. These are deliberately separate env
+// vars: FRONTEND_URL is also used by email.service.js to build a single
+// verification/reset link and must stay one plain URL — it can't double as
+// a comma-separated CORS list without breaking that validation. Trailing
+// slashes are stripped here too — an Origin header never has one, so a
+// value like "https://example.com/" would otherwise never match.
+const allowedOrigins = String(process.env.CORS_ALLOWED_ORIGINS || process.env.FRONTEND_URL || "")
     .split(",")
-    .map((origin) => origin.trim())
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
     .filter(Boolean);
 
 // middleware
