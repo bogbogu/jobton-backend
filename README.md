@@ -53,8 +53,11 @@ Protected routes require `Authorization: Bearer <jwt>`.
 
 - `keyword` — matches title, company, or skills (case-insensitive substring)
 - `location` — case-insensitive substring match
-- `type` — exact match on employment type (`Full-time`, `Part-time`,
-  `Contract`, `Internship`, `Temporary`, `Freelance`)
+- `type` — exact match against **either** `employmentType` (`Full Time`,
+  `Part Time`, `Contract`, `Internship`, `Temporary`, `Freelance`) **or**
+  `workArrangement` (`On-site`, `Remote`, `Hybrid`) — the frontend's job-type
+  filter mixes both into one dropdown, so the API matches either field
+  rather than forcing the frontend to know which is which
 - `industry` — exact match (employer's sector, e.g. `Fintech`)
 - `category` — exact match (role/function taxonomy, e.g. `Design` —
   **different from `industry`**; see below)
@@ -74,8 +77,9 @@ frontend, with the differences called out below):
   "domain": "flutterwave.com",
   "logo_url": null,
   "title": "Senior Product Designer",
-  "location": "Lagos, Nigeria (Remote)",
-  "type": "Full-time",
+  "location": "Lagos, Nigeria",
+  "type": "Full Time",
+  "workArrangement": "Remote",
   "salary": "₦800,000 / month",
   "category": "Design",
   "status": ["verified"],
@@ -93,24 +97,31 @@ frontend, with the differences called out below):
 }
 ```
 
-**Frontend changes needed to consume this:**
+**Frontend wiring status** (Jobs is now actually wired, not just documented —
+`src/hooks/useJobs.ts`, `src/services/jobs.service.ts`,
+`src/features/Jobs/services/useJobsPageService.ts` in the `jobton` repo):
 
-- `Job.id` is a **string** (Mongo ObjectId), not `number`. Anywhere the
-  frontend currently does `Number(id)` or sorts/compares by numeric `id`
-  (`useJobsPageService.ts`'s `sort by id`, `SingleJobDetailPage.tsx`'s
-  `jobs.find((j) => j.id === Number(id))`) needs to switch to string
-  comparison.
-- `posted`/`datePosted` are computed server-side from `createdAt` — the
-  frontend doesn't need to format dates itself.
-- `applicationLink` is new and not yet used — the `JobDetail.tsx` "Apply Now"
-  button currently has no `href`/`onClick` at all; wire it to
-  `job.applicationLink` (`target="_blank" rel="noreferrer"`).
-- `category` is new — a role/function label (`Design`, `Engineering`,
-  `Marketing`, ...) distinct from `industry` (the employer's sector,
-  `Fintech`, `Technology`, ...). This is what `/api/categories` groups jobs
-  by; `industryOptions` in `fieldsKeyValues.ts` filters on `industry`
-  instead. Don't conflate the two when wiring the "browse by category" pages
-  vs. the industry filter dropdown on `/jobs`.
+- `Job.id` is a **string** (Mongo ObjectId) — `useJobsPageService.ts`,
+  `SingleJobDetailPage.tsx`, and `FeaturedJobs.tsx` were updated to compare/
+  pass it as a string instead of `Number(id)`.
+- `posted`/`datePosted` are computed server-side from `createdAt`.
+- `JobDetail.tsx`'s "Apply Now" button is wired to `job.applicationLink`
+  (`target="_blank" rel="noreferrer"`).
+- `category` is a role/function label (`Design`, `Engineering`, ...),
+  distinct from `industry` (employer sector) — not yet surfaced in the UI
+  (the categories page is still separately mocked), but the field is there.
+- `employmentType` is spelled `"Full Time"`/`"Part Time"` (not
+  `"Full-time"`/`"Part-time"`) **specifically to match the frontend's
+  existing `jobTypeOptions` wording verbatim** — there is no translation
+  layer between the stored enum and what the UI displays/filters by. If you
+  ever rename these on the frontend, rename the schema enum to match, not
+  the other way around.
+- `workArrangement` (`On-site`/`Remote`/`Hybrid`, nullable) is a new field,
+  separate from `employmentType` on purpose — the frontend previously
+  conflated them into a single `type`/`jobTypeOptions` value. The `type`
+  query param transparently matches against either field (see above), so
+  the existing filter dropdown's UI/values didn't need to change, only the
+  backend's interpretation of them.
 - `applicants` is a real schema field but there's no Applications feature
   yet to increment it — every job starts at `0`. `MOST_APPLICANTS` sort will
   do nothing meaningful until that exists; don't be surprised by flat
@@ -120,14 +131,15 @@ frontend, with the differences called out below):
   (`"NGN" | "USD"`, default `NGN`), `salaryPeriod`
   (`"hour" | "month" | "year"`, default `month`). The API derives the
   display string (`job.salary` in the response) from these — there is no
-  `salary` field to send. This also means `HIGHEST_SALARY` sort now actually
-  works (it didn't client-side before — `useJobsPageService.ts`'s sort
-  switch has no case for it yet).
+  `salary` field to send. `HIGHEST_SALARY` sort works server-side now, but
+  `useJobsPageService.ts`'s client-side sort switch still has no case for
+  it (falls through to the default "most recent" order) — not fixed yet,
+  since fixing it means re-fetching with `sort=HIGHEST_SALARY` instead of
+  re-sorting client-side, a small behavior change left for later.
 - `save` (bookmark) and `report` are entirely client-only today
   (`useJobsPageService.ts`'s `savedJobIds`/`reportedJobIds` are local
-  `Set`s) — there is no backend support for either. If persistence across
-  sessions/devices is wanted, that's new backend work, not something this
-  API already does.
+  `Set<string>`s, keyed by the real Mongo id now) — there is no backend
+  support for either yet.
 
 ### Freelancers — `/api/freelancers`
 

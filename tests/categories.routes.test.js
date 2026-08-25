@@ -12,7 +12,7 @@ const baseJob = (overrides = {}) => ({
   title: "Product Designer",
   company: "Flutterwave",
   location: "Lagos, Nigeria",
-  employmentType: "Full-time",
+  employmentType: "Full Time",
   salaryMin: 500000,
   category: "Design",
   description: "Design things.",
