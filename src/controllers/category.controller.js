@@ -4,31 +4,39 @@ export const getCategories = async (req, res) => {
   try {
     const categories = await Job.aggregate([
       {
+        $match: {
+          category: { $exists: true, $ne: null },
+        },
+      },
+      {
         $group: {
           _id: "$category",
-          count: { $sum: 1 },
+          jobCount: { $sum: 1 },
         },
       },
       {
         $project: {
           _id: 0,
           title: "$_id",
-          jobs: "$count",
+          jobCount: 1,
         },
       },
       {
         $sort: {
-          jobs: -1,
+          jobCount: -1,
         },
       },
     ]);
 
-    res.status(200).json(categories);
+    return res.status(200).json({
+      message: "Categories retrieved successfully.",
+      categories,
+    });
   } catch (error) {
     console.error(error);
 
-    res.status(500).json({
-      message: "Failed to fetch categories",
+    return res.status(500).json({
+      message: "Failed to fetch categories.",
     });
   }
 };

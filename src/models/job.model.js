@@ -1,5 +1,8 @@
 import mongoose from "mongoose";
 
+const SALARY_CURRENCIES = ["NGN", "USD"];
+const SALARY_PERIODS = ["hour", "month", "year"];
+
 const JobSchema = new mongoose.Schema(
   {
     title: {
@@ -44,9 +47,39 @@ const JobSchema = new mongoose.Schema(
       ],
     },
 
-    salary: {
+    // Structured so the API can sort/filter by salary; `salary` display
+    // strings (e.g. "$8,000 / month") are derived from these at read time.
+    salaryMin: {
+      type: Number,
+      required: [true, "Minimum salary is required"],
+      min: 0,
+    },
+
+    salaryMax: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
+
+    salaryCurrency: {
       type: String,
-      default: "",
+      enum: SALARY_CURRENCIES,
+      default: "NGN",
+    },
+
+    salaryPeriod: {
+      type: String,
+      enum: SALARY_PERIODS,
+      default: "month",
+    },
+
+    // Role/function taxonomy for the "browse by category" pages
+    // (e.g. "Design", "Software Development") — distinct from `industry`,
+    // which describes the employer's sector (e.g. "Fintech").
+    category: {
+      type: String,
+      required: [true, "Category is required"],
+      trim: true,
     },
 
     status: {
@@ -92,11 +125,36 @@ const JobSchema = new mongoose.Schema(
       required: [true, "Application link is required"],
       trim: true,
     },
+
+    // Placeholder counter until a real Application domain exists.
+    // Not incremented anywhere yet — defaults to 0 for every new job.
+    applicants: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    // Optional: who posted this job. Nullable so admin/seed-created jobs
+    // without a specific owner remain admin-only to modify.
+    postedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
   },
   {
     timestamps: true,
   }
 );
+
+// Matches the actual filters getJobs supports today (category/type/industry
+// exact-match). Keyword search uses a regex $or, not $text, so no text index.
+JobSchema.index({ category: 1 });
+JobSchema.index({ employmentType: 1 });
+JobSchema.index({ industry: 1 });
+
+export const JOB_SALARY_CURRENCIES = SALARY_CURRENCIES;
+export const JOB_SALARY_PERIODS = SALARY_PERIODS;
 
 const Job = mongoose.model("Job", JobSchema);
 
