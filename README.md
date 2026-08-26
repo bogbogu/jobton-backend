@@ -43,11 +43,20 @@ Protected routes require `Authorization: Bearer <jwt>`.
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/` | — | list, filter/sort/paginate (below) |
-| GET | `/:id` | — | single job, `404` if missing/invalid id |
+| GET | `/` | optional | list, filter/sort/paginate (below) |
+| GET | `/:id` | optional | single job, `404` if missing/invalid id |
+| GET | `/saved` | required | the current user's saved jobs, same shape as `GET /` |
 | POST | `/` | required | creates a job owned by the caller |
+| POST | `/:id/save` | required | idempotent — save a job for the current user |
+| DELETE | `/:id/save` | required | idempotent — unsave |
 | PATCH | `/:id` | required | owner or `admin` only, `403` otherwise |
 | DELETE | `/:id` | required | owner or `admin` only, `403` otherwise |
+
+"optional" auth means the route works with or without a token, but a valid
+token changes the response: `job.saved` reflects whether *that* user has
+saved it (always `false` when anonymous). This is what lets a public job
+list show correct bookmark state for a logged-in visitor without requiring
+login just to browse.
 
 **GET `/api/jobs` query params** (all optional):
 
@@ -61,6 +70,8 @@ Protected routes require `Authorization: Bearer <jwt>`.
 - `industry` — exact match (employer's sector, e.g. `Fintech`)
 - `category` — exact match (role/function taxonomy, e.g. `Design` —
   **different from `industry`**; see below)
+- `company` — exact match on company name (used by the company detail page
+  to list that company's jobs — see Companies below)
 - `sort` — one of `MOST_RECENT` (default), `OLDEST`, `HIGHEST_SALARY`,
   `MOST_APPLICANTS`
 - `page`, `limit` — pagination (`limit` capped at 50, default 12)
@@ -74,6 +85,7 @@ frontend, with the differences called out below):
 {
   "id": "665f1c2e9a1b2c3d4e5f6789",
   "company": "Flutterwave",
+  "companySlug": "flutterwave",
   "domain": "flutterwave.com",
   "logo_url": null,
   "title": "Senior Product Designer",
@@ -93,9 +105,16 @@ frontend, with the differences called out below):
   "description": "...",
   "responsibilities": ["..."],
   "applicationLink": "https://flutterwave.com/careers/123",
-  "postedBy": "665f1c2e9a1b2c3d4e5f6788"
+  "postedBy": "665f1c2e9a1b2c3d4e5f6788",
+  "saved": false
 }
 ```
+
+`companySlug` is derived from `company` with the same slug function
+`Company.slug` uses (see Companies below) — it lets the frontend link a job
+straight to its company page without a separate lookup, even for a company
+name that has no `Company` document yet (the slug is just computed from the
+string, no DB join).
 
 **Frontend wiring status** (Jobs is now actually wired, not just documented —
 `src/hooks/useJobs.ts`, `src/services/jobs.service.ts`,
@@ -136,10 +155,11 @@ frontend, with the differences called out below):
   it (falls through to the default "most recent" order) — not fixed yet,
   since fixing it means re-fetching with `sort=HIGHEST_SALARY` instead of
   re-sorting client-side, a small behavior change left for later.
-- `save` (bookmark) and `report` are entirely client-only today
-  (`useJobsPageService.ts`'s `savedJobIds`/`reportedJobIds` are local
-  `Set<string>`s, keyed by the real Mongo id now) — there is no backend
-  support for either yet.
+- `save` (bookmark) is now backend-persisted, per-user, via
+  `POST/DELETE /api/jobs/:id/save` and `GET /api/jobs/saved` (see the table
+  above) — wired on the frontend. `report` is still entirely client-only
+  (`useJobsPageService.ts`'s `reportedJobIds` is a local `Set<string>`) —
+  no backend support for it, out of scope for this pass.
 
 ### Freelancers — `/api/freelancers`
 
@@ -161,6 +181,45 @@ skills), `category` (exact match, omit or `"All"` for no filter), `page`,
 `limit` (capped at 50, default 20).
 
 Response: `{ message, freelancers: FreelancerProfile[], pagination }`
+
+### Companies — `/api/companies`
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/` | — | list, `?keyword=` filters by name (substring, case-insensitive) |
+| GET | `/:slug` | — | single company, `404` if unknown |
+| POST | `/` | required | any authenticated user can add a company profile |
+| PATCH | `/:slug` | `admin` only | `403` for a non-admin, even the creator |
+| DELETE | `/:slug` | `admin` only | same |
+
+`slug` is auto-generated from `name` on create (and regenerated if `name`
+changes) — lowercased, non-alphanumeric runs collapsed to a single `-`,
+e.g. `"Flutterwave Inc."` → `"flutterwave-inc"`. Creating a company with a
+name that already exists returns `409`.
+
+**Company is only loosely coupled to Job** — there is no `companyId`
+foreign key on `Job`; a company's job listings are fetched separately via
+`GET /api/jobs?company=<exact name>`. This was a deliberate choice to avoid
+migrating the 56 already-seeded jobs (which store `company` as a plain
+string) onto a foreign key relationship. The practical implication: a job
+whose `company` string doesn't exactly match any `Company.name` just won't
+show up on a company page — creating the `Job` and the `Company` are
+independent actions, nothing enforces them staying in sync.
+
+Response shape: `{ message, company: { id, name, slug, domain, logo_url,
+description, website, industry, location } }` (single) or
+`{ message, companies: Company[], pagination }` (list).
+
+### Newsletter — `/api/newsletter`
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| POST | `/subscribe` | — | `{email}` → `201` (new) or `200` (already subscribed) |
+
+Idempotent and intentionally low-friction — no confirmation email, no
+unsubscribe flow, no admin list-management endpoint (that's part of the
+admin portal, which is out of scope for now). Just a `NewsletterSubscriber`
+collection (`email`, unique) being populated for future use.
 
 Shape matches `src/types/freelancer-type.ts` exactly except `id` is a string,
 not a number — same frontend change needed as for jobs.

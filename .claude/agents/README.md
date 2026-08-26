@@ -4,15 +4,21 @@ This directory defines the specialized agents for working on the Jobton backend
 (`jobton-backend`). It also records what was actually found when the codebase
 was inspected, so agents (and future contributors) don't have to rediscover
 it. **The codebase is the source of truth** — if something here goes stale,
-trust `git log` / the files over this document. Last updated 2026-08-25 after
-building out the Jobs and Freelancers domains to match the (previously
-mock-only) Jobton frontend — see [`../../README.md`](../../README.md) for the
-full API reference handed off to the frontend team.
+trust `git log` / the files over this document. Last updated 2026-08-25 —
+Jobs and Freelancers were built first to match the (previously mock-only)
+Jobton frontend, then Saved Jobs (per-user, persisted), Companies, and
+Newsletter subscription were added against a BRD gap-analysis. See
+[`../../README.md`](../../README.md) for the full API reference handed off
+to the frontend team.
 
 ## What Jobton backend actually is today
 
 A small but now functionally complete-for-launch Node.js/Express/MongoDB API:
-auth, job listings, and a freelancer directory, all live.
+auth, job listings (with per-user saved jobs), a freelancer directory,
+company profiles, and newsletter capture, all live. Still explicitly out of
+scope: admin portal, SEO slugs for jobs themselves, analytics, Employer/
+Application domain — see the BRD gap analysis referenced in project memory/
+conversation history if you need the full list of what's deferred and why.
 
 - **Stack**: Node.js (ESM — `"type": "module"`), Express 5.2.1, Mongoose 9.7.4,
   MongoDB (Atlas, `mongodb+srv://`), bcryptjs, jsonwebtoken, Resend (transactional
@@ -26,21 +32,23 @@ auth, job listings, and a freelancer directory, all live.
   (`process.argv[1] === currentFilePath`), which is why tests import `app.js`
   via Supertest without opening a real port.
 - **Mounted routes**: `/api/auth`, `/api/categories`, `/api/jobs`,
-  `/api/freelancers`. Full contract (query params, response shapes, what the
-  frontend needs to change to consume each) is in
-  [`../../README.md`](../../README.md) — that's the document to hand the
-  frontend team, not this one.
-- **Domain models**: `User`, `Job`, and `Freelancer` (all under
-  `src/models/`). `Job.postedBy` and `Freelancer.user` are optional
-  references to the `User` who owns that record — nullable so admin/seed-
-  created records without a specific owner remain admin-only to modify.
-  Still no Employer/Company or Application model — see "Areas likely to
-  need architectural attention" below.
-- **Tests**: 46 passing tests, 5 files (`tests/*.test.js`) —
-  `auth.routes.test.js` (23, up from 18 after the 2026-08-25
-  security-hardening pass added password-policy, NoSQL-injection-casting,
-  and rate-limit regression tests), `auth-token-utils.test.js` (6), and jobs,
-  freelancers, and categories (17 combined, unchanged). Run with `npm test`.
+  `/api/freelancers`, `/api/companies`, `/api/newsletter`. Full contract
+  (query params, response shapes, what the frontend needs to change to
+  consume each) is in [`../../README.md`](../../README.md) — that's the
+  document to hand the frontend team, not this one.
+- **Domain models**: `User`, `Job`, `Freelancer`, `Company`,
+  `NewsletterSubscriber`, `SavedJob` (all under `src/models/`).
+  `Job.postedBy` and `Freelancer.user` are optional references to the
+  `User` who owns that record — nullable so admin/seed-created records
+  without a specific owner remain admin-only to modify. `SavedJob` is a
+  `{user, job}` join collection (unique compound index) backing per-user
+  bookmarks — deliberately not an array field on `User` or `Job`, to avoid
+  unbounded document growth. `Company` is only loosely coupled to `Job`
+  (matched by name string, not a foreign key — see the README's Companies
+  section for why). Still no Employer or Application model — see "Areas
+  likely to need architectural attention" below.
+- **Tests**: 71 passing tests, 10 files (`tests/*.test.js`). Run with
+  `npm test`.
 
 ## Verified architectural findings (read this before proposing changes)
 

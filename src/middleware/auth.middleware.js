@@ -42,4 +42,30 @@ const protect = async (req, res, next) => {
   }
 };
 
+// Like `protect`, but never rejects the request — used on public routes
+// that need to know *if* the caller happens to be logged in (e.g. to mark
+// which jobs they've saved) without requiring it. A missing or invalid
+// token is silently treated as "anonymous," not an error.
+export const optionalAuth = async (req, res, next) => {
+  try {
+    const header = req.headers.authorization;
+
+    if (!header || !header.startsWith("Bearer")) {
+      return next();
+    }
+
+    const token = header.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (user) {
+      req.user = user;
+    }
+
+    return next();
+  } catch (error) {
+    return next();
+  }
+};
+
 export default protect;
