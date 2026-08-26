@@ -10,6 +10,8 @@ import "dotenv/config";
 import mongoose from "mongoose";
 import Job from "../src/models/job.model.js";
 import Freelancer from "../src/models/freelancer.model.js";
+import Company from "../src/models/company.model.js";
+import { slugify } from "../src/utils/slugify.utils.js";
 
 // ---------------------------------------------------------------------------
 // Source data — transcribed from the frontend's src/hooks/useJobs.ts and
@@ -189,6 +191,31 @@ const transformFreelancer = (mock) => ({
   user: null,
 });
 
+// One Company per distinct company name in the mock job data, so the
+// company pages have real content to show. Company is only loosely coupled
+// to Job (matched by name string, not a foreign key — see company.model.js
+// and job.controller.js's `company` filter), so this doesn't require any
+// change to how jobs themselves are stored.
+const deriveCompanies = (jobs) => {
+  const byName = new Map();
+
+  for (const mock of jobs) {
+    if (!byName.has(mock.company)) {
+      byName.set(mock.company, {
+        name: mock.company,
+        // Set explicitly rather than relying on the pre('save') slug hook —
+        // insertMany() doesn't run per-document save middleware.
+        slug: slugify(mock.company),
+        domain: mock.domain,
+        industry: mock.industry,
+        createdBy: null,
+      });
+    }
+  }
+
+  return [...byName.values()];
+};
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
@@ -211,6 +238,14 @@ const seed = async () => {
   } else {
     const inserted = await Freelancer.insertMany(mockFreelancers.map(transformFreelancer));
     console.log(`Seeded ${inserted.length} freelancers.`);
+  }
+
+  const existingCompanyCount = await Company.countDocuments();
+  if (existingCompanyCount > 0) {
+    console.log(`Skipped companies — ${existingCompanyCount} already in the database.`);
+  } else {
+    const inserted = await Company.insertMany(deriveCompanies(mockJobs));
+    console.log(`Seeded ${inserted.length} companies.`);
   }
 
   await mongoose.disconnect();

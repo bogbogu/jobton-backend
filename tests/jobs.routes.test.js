@@ -83,14 +83,32 @@ describe("Job routes", () => {
     expect(response.body.job).toMatchObject({
       title: "Senior Product Designer",
       company: "Flutterwave",
+      companySlug: "flutterwave",
       type: "Full Time",
       salary: "₦800,000 / month",
       category: "Design",
       applicants: 0,
       postedBy: user._id.toString(),
+      saved: false,
     });
     expect(typeof response.body.job.id).toBe("string");
     expect(response.body.job.posted).toBe("Today");
+  });
+
+  it("filters jobs by company", async () => {
+    const { token } = await createUserWithToken();
+
+    await request(app).post("/api/jobs").set("Authorization", `Bearer ${token}`).send(
+      validJobPayload({ title: "Flutterwave Job", company: "Flutterwave" })
+    );
+    await request(app).post("/api/jobs").set("Authorization", `Bearer ${token}`).send(
+      validJobPayload({ title: "Paystack Job", company: "Paystack" })
+    );
+
+    const response = await request(app).get("/api/jobs").query({ company: "Paystack" });
+
+    expect(response.body.jobs).toHaveLength(1);
+    expect(response.body.jobs[0].title).toBe("Paystack Job");
   });
 
   it("POST /api/jobs rejects a payload missing required fields", async () => {
