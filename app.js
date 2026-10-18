@@ -14,6 +14,7 @@ import jobRoutes from "./src/routes/job.route.js";
 import freelancerRoutes from "./src/routes/freelancer.routes.js";
 import companyRoutes from "./src/routes/company.routes.js";
 import newsletterRoutes from "./src/routes/newsletter.routes.js";
+import adminRoutes from "./src/routes/admin.routes.js";
 import { validateEmailConfig } from "./src/utils/email.service.js";
 
 const port = process.env.PORT || 3000;
@@ -79,6 +80,7 @@ app.use("/api/jobs", jobRoutes);
 app.use("/api/freelancers", freelancerRoutes);
 app.use("/api/companies", companyRoutes);
 app.use("/api/newsletter", newsletterRoutes);
+app.use("/api/admin", adminRoutes);
 
 app.get('/', (req, res) => {
     try {
