@@ -8,7 +8,8 @@
     "test:coverage": "vitest run --coverage",
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "ingest": "node scripts/ingest.js"
   },
   "repository": {
     "type": "git",
@@ -23,7 +24,9 @@
   },
   "homepage": "https://github.com/bogbogu/jobton-backend#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "0.135.0",
     "bcryptjs": "^3.0.3",
+    "cheerio": "1.2.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -32,7 +35,8 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.7.4",
     "resend": "^6.18.1",
-    "validator": "^13.15.35"
+    "validator": "^13.15.35",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.10",
