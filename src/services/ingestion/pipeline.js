@@ -1,8 +1,12 @@
 import Job from "../../models/job.model.js";
 import TelegramChannel from "../../models/telegramChannel.model.js";
 import TelegramPost from "../../models/telegramPost.model.js";
-import IngestionLock, { acquireLease, releaseLease } from "../../models/ingestionLock.model.js";
-import IngestionUsage, { recordUsage, reserveLlmCall } from "../../models/ingestionUsage.model.js";
+import IngestionLock, { acquireLease, releaseLease, renewLease } from "../../models/ingestionLock.model.js";
+import IngestionUsage, {
+  getLlmCallsToday,
+  recordUsage,
+  reserveLlmCall,
+} from "../../models/ingestionUsage.model.js";
 import { cleanText, classifyLink } from "../../utils/validators.utils.js";
 import { getConfig } from "./config.js";
 import { computeDedupeKey, hashPostText } from "./dedupe.js";
@@ -13,11 +17,17 @@ import { parseChannelHtml } from "./telegramParse.js";
 
 const LEASE_NAME = "telegram-ingestion";
 const LEASE_TTL_MS = 30 * 60 * 1000;
+// Renew the lease at least this often (in posts) while working through them.
+const RENEW_EVERY_POSTS = 10;
 const MIN_POST_CHARS = 40;
 const MAX_CONSECUTIVE_CHANNEL_FAILURES = 10;
 // A run that keeps failing at the LLM (bad key, outage) must not burn the
 // whole daily budget on doomed calls.
 const MAX_CONSECUTIVE_LLM_FAILURES = 5;
+// A post that keeps failing transiently (e.g. a payload that always makes the
+// API answer 5xx) is tried this many times in total, then marked "failed" so
+// it cannot burn budget on every run forever.
+const MAX_TRANSIENT_ATTEMPTS = 5;
 const DUPLICATE_KEY = 11000;
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,8 +40,41 @@ export const shortError = (error, max = 200) => {
   return (text || "Unknown error").slice(0, max);
 };
 
+// Transient = worth retrying on a later run: no status at all (timeout,
+// network error), 429 and 5xx. extractJob.js wraps API errors as
+// "LLM request failed (status N)." / "LLM request failed." and keeps no other
+// field, so the status is read from `error.status` when present and parsed
+// from the message otherwise. Refusals, unparsable output and other 4xx are
+// permanent.
+export function isTransientLlmError(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  let status = Number.isInteger(error?.status) ? error.status : undefined;
+
+  if (status === undefined) {
+    if (!/^LLM request failed/.test(message)) return false;
+    const match = /status (\d{3})/.exec(message);
+    status = match ? Number(match[1]) : undefined;
+  }
+
+  if (status === undefined) return true;
+  return status === 429 || status >= 500;
+}
+
+// Exit code for the scheduler: non-zero when the run did not get its work done
+// (aborted on repeated LLM failures, lost its lease, or every channel it tried
+// failed to poll). A normal "lease_held" skip is not an error.
+export function ingestionExitCode(summary) {
+  if (!summary || summary.skipped) return 0;
+  if (summary.abortedByErrors || summary.leaseLost) return 1;
+  if (summary.channelsAttempted > 0 && summary.channelsFailed >= summary.channelsAttempted) return 1;
+  return 0;
+}
+
 const emptySummary = () => ({
   channels: 0,
+  channelsAttempted: 0,
+  channelsFailed: 0,
+  gapSkipped: 0,
   fetched: 0,
   stored: 0,
   duplicates: 0,
@@ -40,18 +83,26 @@ const emptySummary = () => ({
   extracted: 0,
   jobsCreated: 0,
   failed: 0,
+  transientFailures: 0,
   llmCalls: 0,
   inputTokens: 0,
   outputTokens: 0,
   stoppedByCap: false,
   abortedByErrors: false,
+  leaseLost: false,
 });
 
-// Unique indexes are what make locking, the daily cap and post de-duplication
-// safe, so make sure they exist before relying on them (autoIndex builds them
-// in the background right after connecting).
-async function ensureIndexes() {
+// Unique indexes are what make locking, the daily cap and post/job
+// de-duplication safe, so make sure they exist before relying on them
+// (autoIndex builds them in the background right after connecting).
+async function ensureIndexes(log) {
   await Promise.all([
+    // If the unique dedupeKey index cannot be built (pre-existing duplicate
+    // keys) fall back to the lookup-only check instead of blocking all
+    // ingestion, but say so.
+    Job.init().catch((error) => {
+      log(`ingestion: could not ensure job indexes: ${shortError(error)}`);
+    }),
     IngestionLock.init(),
     IngestionUsage.init(),
     TelegramPost.init(),
@@ -59,12 +110,37 @@ async function ensureIndexes() {
   ]);
 }
 
+// Extends our lease. Returns false (and flags the run) when it is no longer
+// ours, in which case the caller must stop cleanly: another run may already be
+// working. A failed renewal call is treated the same way, to be safe.
+async function keepLease(ctx) {
+  const { state, summary, log } = ctx;
+  if (state.leaseLost) return false;
+
+  let renewed = false;
+  try {
+    renewed = await renewLease(LEASE_NAME, ctx.owner, LEASE_TTL_MS);
+  } catch (error) {
+    log(`ingestion: could not renew lease: ${shortError(error)}`);
+  }
+
+  if (!renewed) {
+    state.leaseLost = true;
+    summary.leaseLost = true;
+    log("ingestion: lease lost, stopping the run");
+  }
+  return renewed;
+}
+
+const isDuplicateKeyError = (error) => error?.code === DUPLICATE_KEY || error?.cause?.code === DUPLICATE_KEY;
+
 // ---- phase 1: fetch & store -----------------------------------------------------------------
 async function pollChannel(channel, ctx) {
-  const { config, fetchImpl, sleep, summary, state } = ctx;
+  const { config, fetchImpl, sleep, summary, state, log } = ctx;
   const baseline = channel.lastMessageId || 0;
   let highestSeen = baseline;
   let beforeId;
+  let reachedBaseline = false;
 
   for (let page = 0; page < config.maxPagesPerChannel; page += 1) {
     if (state.requests > 0 && config.fetchDelayMs > 0) await sleep(config.fetchDelayMs);
@@ -78,7 +154,10 @@ async function pollChannel(channel, ctx) {
     });
 
     const posts = parseChannelHtml(html, channel.username);
-    if (posts.length === 0) break;
+    if (posts.length === 0) {
+      reachedBaseline = true; // nothing older to fetch
+      break;
+    }
 
     summary.fetched += posts.length;
     const ids = posts.map((post) => post.messageId);
@@ -93,13 +172,29 @@ async function pollChannel(channel, ctx) {
       config
     );
 
-    if (oldest <= baseline || oldest <= 1) break;
     beforeId = oldest;
+    if (oldest <= baseline || oldest <= 1) {
+      reachedBaseline = true;
+      break;
+    }
+  }
+
+  // The page cap ended the run before reaching the old high-water mark: the
+  // messages between the two are never fetched (the mark moves up to the
+  // newest id). Say so instead of losing them silently.
+  if (!reachedBaseline && baseline > 0 && beforeId > baseline + 1) {
+    summary.gapSkipped += 1;
+    log(
+      `ingestion: channel ${channel.username} page limit reached; messages ${baseline + 1}-${beforeId - 1} were skipped`
+    );
   }
 
   return highestSeen;
 }
 
+// Inserts posts not stored yet. ONLY duplicate-key errors (a concurrent writer
+// stored the same post) are tolerated; anything else is rethrown so the caller
+// does not advance the channel's high-water mark past posts that were not stored.
 async function storeNewPosts(channel, posts, config) {
   if (posts.length === 0) return 0;
 
@@ -129,16 +224,27 @@ async function storeNewPosts(channel, posts, config) {
     const inserted = await TelegramPost.insertMany(docs, { ordered: false });
     return inserted.length;
   } catch (error) {
-    // Lost a race with another writer: the duplicates are simply ignored.
-    if (error?.code !== DUPLICATE_KEY && !error?.writeErrors) throw error;
-    return Number(error.insertedCount ?? error.result?.insertedCount ?? 0) || 0;
+    const writeErrors = Array.isArray(error?.writeErrors) ? error.writeErrors : [];
+
+    if (writeErrors.length > 0) {
+      const onlyDuplicates = writeErrors.every((entry) => (entry?.code ?? entry?.err?.code) === DUPLICATE_KEY);
+      if (!onlyDuplicates) throw error;
+      return Math.max(0, docs.length - writeErrors.length);
+    }
+
+    // No per-document detail: a bare duplicate-key error stored nothing we can count.
+    if (error?.code === DUPLICATE_KEY) return 0;
+    throw error;
   }
 }
 
 async function pollChannels(channels, ctx) {
-  const { log } = ctx;
+  const { log, summary } = ctx;
 
   for (const channel of channels) {
+    if (!(await keepLease(ctx))) return;
+    summary.channelsAttempted += 1;
+
     try {
       const highestSeen = await pollChannel(channel, ctx);
       await TelegramChannel.updateOne(
@@ -153,9 +259,12 @@ async function pollChannels(channels, ctx) {
         }
       );
     } catch (error) {
+      summary.channelsFailed += 1;
       const failures = (channel.consecutiveFailures || 0) + 1;
       const message = shortError(error, 280);
       log(`ingestion: channel ${channel.username} poll failed: ${message}`);
+      // lastMessageId is deliberately not touched here: posts that could not
+      // be stored must be fetched again next run.
       await TelegramChannel.updateOne(
         { _id: channel._id },
         {
@@ -185,61 +294,80 @@ function missingFields(job) {
   return missing;
 }
 
+// E11000 raised by the partial unique index on Job.dedupeKey.
+const isDedupeKeyConflict = (error) =>
+  isDuplicateKeyError(error) &&
+  (error.keyPattern?.dedupeKey !== undefined || /dedupeKey/.test(String(error.message)));
+
 // Creates the pending-review Job for one sanitized extraction. The pipeline
 // never sets badges (`status`), `postedBy` or any reviewStatus other than
 // "pending_review": publishing is a human decision.
+//
+// Returns { job } or { duplicateOf } (id of the job that already has this
+// dedupeKey; may be undefined if it vanished meanwhile).
 async function createPendingJob({ extracted, post, extraction, config }) {
-  const linkClass = classifyLink(extracted.applicationLink, extracted.company);
-  const redFlags = computeRedFlags({ job: extracted, text: post.text, linkClass });
-  const missing = missingFields(extracted);
   const dedupeKey = computeDedupeKey(extracted);
 
+  // Cheap check first: no red-flag / link work for something we already have.
+  // Rejected jobs keep their dedupeKey on purpose, so the same spam is not
+  // queued for review again.
   const existing = await Job.findOne({ dedupeKey }, { _id: 1 }).lean();
   if (existing) return { duplicateOf: existing._id };
 
+  const linkClass = classifyLink(extracted.applicationLink, extracted.company);
+  const redFlags = computeRedFlags({ job: extracted, text: post.text, linkClass });
+  const missing = missingFields(extracted);
   const hasSalary = hasValue(extracted.salaryMin);
 
-  const job = await Job.create({
-    title: extracted.title,
-    company: extracted.company,
-    location: extracted.location,
-    employmentType: extracted.employmentType,
-    workArrangement: extracted.workArrangement,
-    salaryMin: extracted.salaryMin,
-    salaryMax: hasSalary ? extracted.salaryMax ?? null : null,
-    ...(hasSalary ? { salaryCurrency: extracted.salaryCurrency } : {}),
-    salaryPeriod: hasSalary ? extracted.salaryPeriod ?? null : null,
-    category: extracted.category,
-    skills: extracted.skills,
-    experience: extracted.experience,
-    qualification: extracted.qualification,
-    description: extracted.description,
-    responsibilities: extracted.responsibilities,
-    applicationLink: extracted.applicationLink,
-    applyEmail: extracted.applyEmail,
-    applyPhone: extracted.applyPhone,
-    reviewStatus: "pending_review",
-    source: {
-      kind: "telegram",
-      channel: post.channel,
-      messageId: post.messageId,
-      url: `https://t.me/${post.channel}/${post.messageId}`,
-      postedAt: post.postedAt || undefined,
-    },
-    extraction: {
-      model: config.model,
-      corrections: extracted.corrections,
-      modelNotes: extraction.modelNotes,
-      redFlags,
-      linkClass,
-      missing,
-      droppedFields: extracted.droppedFields,
-      post: post._id,
-    },
-    dedupeKey,
-  });
+  try {
+    const job = await Job.create({
+      title: extracted.title,
+      company: extracted.company,
+      location: extracted.location,
+      employmentType: extracted.employmentType,
+      workArrangement: extracted.workArrangement,
+      salaryMin: extracted.salaryMin,
+      salaryMax: hasSalary ? extracted.salaryMax ?? null : null,
+      ...(hasSalary ? { salaryCurrency: extracted.salaryCurrency } : {}),
+      salaryPeriod: hasSalary ? extracted.salaryPeriod ?? null : null,
+      category: extracted.category,
+      skills: extracted.skills,
+      experience: extracted.experience,
+      qualification: extracted.qualification,
+      description: extracted.description,
+      responsibilities: extracted.responsibilities,
+      applicationLink: extracted.applicationLink,
+      applyEmail: extracted.applyEmail,
+      applyPhone: extracted.applyPhone,
+      reviewStatus: "pending_review",
+      source: {
+        kind: "telegram",
+        channel: post.channel,
+        messageId: post.messageId,
+        url: `https://t.me/${post.channel}/${post.messageId}`,
+        postedAt: post.postedAt || undefined,
+      },
+      extraction: {
+        model: config.model,
+        corrections: extracted.corrections,
+        modelNotes: extraction.modelNotes,
+        redFlags,
+        linkClass,
+        missing,
+        droppedFields: extracted.droppedFields,
+        post: post._id,
+      },
+      dedupeKey,
+    });
 
-  return { job };
+    return { job };
+  } catch (error) {
+    // Lost a race: another writer created a job with this key between our
+    // lookup and the insert. The unique index guarantees exactly one wins.
+    if (!isDedupeKeyConflict(error)) throw error;
+    const winner = await Job.findOne({ dedupeKey }, { _id: 1 }).lean();
+    return { duplicateOf: winner?._id };
+  }
 }
 
 const finishPost = (post, fields) =>
@@ -299,9 +427,21 @@ async function processPost(post, ctx) {
       await recordUsage(usage);
     }
     const message = shortError(error);
-    log(`ingestion: post ${post.channel}/${post.messageId} extraction failed: ${message}`);
-    await finishPost(post, { status: "failed", error: message });
-    summary.failed += 1;
+    const attempts = (post.attempts || 0) + 1;
+
+    if (isTransientLlmError(error) && attempts < MAX_TRANSIENT_ATTEMPTS) {
+      // Outage / rate limit / timeout: the post is fine, so leave it "new" for
+      // the next run (the message is kept for visibility only).
+      log(`ingestion: post ${post.channel}/${post.messageId} extraction failed (will retry): ${message}`);
+      await TelegramPost.updateOne({ _id: post._id }, { $set: { error: message }, $inc: { attempts: 1 } });
+      summary.transientFailures += 1;
+    } else {
+      log(`ingestion: post ${post.channel}/${post.messageId} extraction failed: ${message}`);
+      await finishPost(post, { status: "failed", error: message });
+      summary.failed += 1;
+    }
+
+    // Both kinds count towards aborting a run that is clearly not working.
     state.consecutiveLlmFailures += 1;
     if (state.consecutiveLlmFailures >= MAX_CONSECUTIVE_LLM_FAILURES) {
       summary.abortedByErrors = true;
@@ -351,30 +491,75 @@ async function processPost(post, ctx) {
   return "continue";
 }
 
-async function processChannels(channels, ctx) {
+// Works through one channel's "new" posts, oldest first, using at most `quota`
+// LLM calls. Returns "done" | "cut" (quota hit with posts left) | "stop".
+async function processChannel(channel, quota, ctx) {
   const { config, summary, state } = ctx;
 
-  for (const channel of channels) {
-    const pending = await Job.countDocuments({
-      "source.channel": channel.username,
-      reviewStatus: "pending_review",
-    });
-    state.pendingCreated = 0;
+  const pending = await Job.countDocuments({
+    "source.channel": channel.username,
+    reviewStatus: "pending_review",
+  });
+  state.pendingCreated = 0;
 
-    // Review backlog full: leave this channel's posts as "new" until a human catches up.
-    if (pending >= config.maxPendingPerChannel) continue;
+  // Review backlog full: leave this channel's posts as "new" until a human catches up.
+  if (pending >= config.maxPendingPerChannel) return "done";
 
-    const posts = await TelegramPost.find({ channel: channel.username, status: "new" })
-      .sort({ messageId: 1 })
-      .limit(config.maxPostsPerChannelRun)
-      .lean();
+  const posts = await TelegramPost.find({ channel: channel.username, status: "new" })
+    .sort({ messageId: 1 })
+    .limit(config.maxPostsPerChannelRun)
+    .lean();
 
-    for (const post of posts) {
-      if (pending + state.pendingCreated >= config.maxPendingPerChannel) break;
-      const outcome = await processPost(post, ctx);
-      if (outcome === "stop") return;
+  const callsAtStart = summary.llmCalls;
+
+  for (const post of posts) {
+    if (pending + state.pendingCreated >= config.maxPendingPerChannel) break;
+    if (summary.llmCalls - callsAtStart >= quota) return "cut";
+
+    // Long runs (many slow LLM calls) must not outlive the lease.
+    state.postsSinceRenew += 1;
+    if (state.postsSinceRenew >= RENEW_EVERY_POSTS) {
+      state.postsSinceRenew = 0;
+      if (!(await keepLease(ctx))) return "stop";
     }
+
+    if ((await processPost(post, ctx)) === "stop") return "stop";
   }
+  return "done";
+}
+
+// Fairness: one busy channel must not eat the whole daily LLM budget and leave
+// the others starving every day. Each channel gets an equal share of what is
+// left of today's cap, recomputed per channel: quota = ceil(remaining cap /
+// channels still to process). Whatever an earlier channel does not use rolls
+// over to the later ones, and a channel cut short simply continues next run
+// (its posts stay "new", oldest first).
+async function processChannels(channels, ctx) {
+  const { config, summary } = ctx;
+
+  const usedAtStart = await getLlmCallsToday();
+  const callsAtStart = summary.llmCalls;
+  const remainingCap = () => config.dailyLlmCap - usedAtStart - (summary.llmCalls - callsAtStart);
+  let cutShort = false;
+
+  for (let index = 0; index < channels.length; index += 1) {
+    const channel = channels[index];
+    if (!(await keepLease(ctx))) return;
+
+    // A channel auto-deactivated while polling must not be processed this run.
+    const fresh = await TelegramChannel.findById(channel._id, { active: 1 }).lean();
+    if (!fresh?.active) continue;
+
+    const share = Math.ceil(remainingCap() / (channels.length - index));
+    // At least 1 so an exhausted cap is detected (and reported) by reserveLlmCall.
+    const quota = Number.isFinite(share) ? Math.max(1, share) : 1;
+
+    const outcome = await processChannel(channel, quota, ctx);
+    if (outcome === "stop") return;
+    if (outcome === "cut") cutShort = true;
+  }
+
+  if (cutShort && remainingCap() <= 0) summary.stoppedByCap = true;
 }
 
 // ---- entry point -------------------------------------------------------------------------------
@@ -393,9 +578,10 @@ export async function runIngestion({
 } = {}) {
   const summary = emptySummary();
 
-  await ensureIndexes();
+  await ensureIndexes(log);
 
-  if (!(await acquireLease(LEASE_NAME, LEASE_TTL_MS))) {
+  const owner = await acquireLease(LEASE_NAME, LEASE_TTL_MS);
+  if (!owner) {
     return { skipped: "lease_held" };
   }
 
@@ -410,15 +596,23 @@ export async function runIngestion({
       sleep,
       log,
       summary,
-      state: { requests: 0, consecutiveLlmFailures: 0, pendingCreated: 0 },
+      owner,
+      state: {
+        requests: 0,
+        consecutiveLlmFailures: 0,
+        pendingCreated: 0,
+        postsSinceRenew: 0,
+        leaseLost: false,
+      },
     };
 
     await pollChannels(channels, ctx);
-    await processChannels(channels, ctx);
+    if (!ctx.state.leaseLost) await processChannels(channels, ctx);
 
     return summary;
   } finally {
-    await releaseLease(LEASE_NAME).catch((error) => {
+    // Only releases if the lease is still ours.
+    await releaseLease(LEASE_NAME, owner).catch((error) => {
       log(`ingestion: could not release lease: ${shortError(error)}`);
     });
   }

@@ -189,11 +189,19 @@ export const updateChannel = async (req, res) => {
       });
     }
 
-    const channel = await TelegramChannel.findByIdAndUpdate(
-      id,
-      { $set: set },
-      { returnDocument: "after", runValidators: true }
-    );
+    const update = { $set: set };
+    if (set.active === true) {
+      // Re-enabling a channel (usually one auto-deactivated after repeated
+      // poll failures) starts it with a clean slate; otherwise a single new
+      // failure would immediately deactivate it again.
+      set.consecutiveFailures = 0;
+      update.$unset = { lastError: "" };
+    }
+
+    const channel = await TelegramChannel.findByIdAndUpdate(id, update, {
+      returnDocument: "after",
+      runValidators: true,
+    });
 
     if (!channel) {
       return res.status(404).json({ message: "Channel not found." });

@@ -11,7 +11,9 @@
 
 export const REVIEW_STATUSES = ["pending_review", "published", "rejected"];
 
-export const PUBLIC_JOB_FILTER = Object.freeze({
+// A FRESH object on every call: Mongoose and callers add keys to / cast
+// filters in place, so a shared object would leak state between queries.
+export const publicJobFilter = () => ({
   reviewStatus: { $in: ["published", null] },
 });
 

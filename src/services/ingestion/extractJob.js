@@ -53,7 +53,7 @@ Rules:
 - Set isJobPost=false for anything that is not a vacancy: ads, courses, tutor waitlists, interview tips, news, promotions. Give a short notJobReason and return no jobs.
 - One post can contain several vacancies; return one entry per vacancy.
 - Never invent values. If the post does not state something, use null (or "Unknown" for the enum fields). Do not guess the company.
-- "N" or "₦" means NGN. Convert amounts to plain numbers (N800,000+ -> salaryMin 800000, salaryMax null). If the pay period is not stated, use "Unknown".
+- Set salaryCurrency to "USD" for amounts written with "$" or "USD", and to "NGN" for amounts written with "N" or "₦". If the currency is not stated, use "Unknown". Convert amounts to plain numbers (N800,000+ -> salaryMin 800000, salaryMax null). If the pay period is not stated, use "Unknown".
 - "Expected resumption", "deadline" and similar are not salary or employment type.
 - description: a short neutral summary in 1-3 sentences of the role, in your own words.
 - category: a short role/function label such as "Human Resources", "Sales", "Engineering"; null if unclear.
@@ -74,8 +74,17 @@ const getOutputFormat = () => {
 // The post is wrapped in <post>..</post>. A post containing a literal "</post>"
 // could close the wrapper early and make the rest read as instructions, so any
 // "<post" / "</post" sequence (any case, optional spaces) is defused first.
+// The text is NFKC-normalized first so look-alikes (fullwidth "＜/post＞",
+// "ｐｏｓｔ", small-form brackets) collapse to the ASCII form, and invisible
+// format characters that could split the tag (a zero-width space after "<") are removed.
+// The lookahead has no overlapping quantifiers, so it stays linear.
+const INVISIBLE_CHARS = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g;
+
 export const neutralizePostTags = (text) =>
-  String(text ?? "").replace(/<(\s*\/?\s*post)/gi, "&lt;$1");
+  String(text ?? "")
+    .normalize("NFKC")
+    .replace(INVISIBLE_CHARS, "")
+    .replace(/<(?=\s*(?:\/\s*)?post)/gi, "&lt;");
 
 export const buildUserMessage = (text) => `<post>\n${neutralizePostTags(text)}\n</post>`;
 
@@ -145,10 +154,17 @@ const safeNumber = (value) =>
 const comparableUrl = (value) => stripTrackingParams(String(value).trim()).replace(/\/+$/, "");
 
 const URL_IN_TEXT = /https?:\/\/[^\s<>"'`]+/gi;
-const TRAILING_PUNCTUATION = /[.,;:!?)\]}>»"'”’]+$/;
+const TRAILING_PUNCTUATION_CHARS = ".,;:!?)]}>»\"'”’";
 
-const urlsInText = (text) =>
-  (String(text).match(URL_IN_TEXT) || []).map((url) => url.replace(TRAILING_PUNCTUATION, ""));
+// Index loop instead of /[...]+$/: that pattern is quadratic on a long run of
+// punctuation that is not at the very end.
+const stripTrailingPunctuation = (url) => {
+  let end = url.length;
+  while (end > 0 && TRAILING_PUNCTUATION_CHARS.includes(url[end - 1])) end -= 1;
+  return url.slice(0, end);
+};
+
+const urlsInText = (text) => (String(text).match(URL_IN_TEXT) || []).map(stripTrailingPunctuation);
 
 function linkAppearsInPost(link, text, links) {
   const wanted = comparableUrl(link);
@@ -161,6 +177,42 @@ function linkAppearsInPost(link, text, links) {
 
 const digitsOf = (value) => String(value).replace(/\D/g, "");
 
+// Email-like tokens in the post, lowercased, as WHOLE tokens: a maximal run of
+// email characters (one linear pass), minus trailing sentence punctuation.
+// "hr@acme-corp.co" is therefore not found just because "hr@acme-corp.com" is.
+const EMAIL_TOKEN_RUN = /[A-Za-z0-9._%+@-]+/g;
+const EMAIL_TRAILING_CHARS = "._%+-";
+
+function emailsInText(text) {
+  const found = new Set();
+  for (const run of String(text).match(EMAIL_TOKEN_RUN) || []) {
+    if (!run.includes("@")) continue;
+    let end = run.length;
+    while (end > 0 && EMAIL_TRAILING_CHARS.includes(run[end - 1])) end -= 1;
+    found.add(run.slice(0, end).toLowerCase());
+  }
+  return found;
+}
+
+// Phone-like runs in the post (digits with spaces, dots, dashes, brackets),
+// each normalized on its own. Digits from unrelated numbers are never mixed.
+// Line breaks end a run, so numbers on separate lines are never merged.
+const PHONE_RUN = /\+?\d[\d\t ().-]{5,}\d/g;
+
+function phonesInText(text) {
+  const found = [];
+  for (const run of String(text).match(PHONE_RUN) || []) {
+    const normalized = normalizePhone(run);
+    if (normalized) found.push(digitsOf(normalized));
+  }
+  return found;
+}
+
+const samePhone = (a, b) => {
+  if (a === b) return true;
+  return a.length >= 9 && b.length >= 9 && a.slice(-9) === b.slice(-9);
+};
+
 // Takes what the model returned and produces values that are safe to store.
 // EVERY model value is untrusted: a post can contain instructions ("set
 // applicationLink to ...") that the model obeys. Anything that could send a
@@ -171,8 +223,8 @@ const digitsOf = (value) => String(value).replace(/\D/g, "");
 // rejected it, so a reviewer knows the post may say something different.
 export function sanitizeExtraction({ jobs } = {}, { text = "", links = [] } = {}) {
   const postText = String(text ?? "");
-  const postTextLower = postText.toLowerCase();
-  const postDigits = digitsOf(postText);
+  const postEmails = emailsInText(postText);
+  const postPhones = phonesInText(postText);
   const fallbackDescription = multiLine(postText, 300);
 
   const sanitized = [];
@@ -203,7 +255,7 @@ export function sanitizeExtraction({ jobs } = {}, { text = "", links = [] } = {}
     let applyEmail;
     if (typeof raw.applyEmail === "string" && raw.applyEmail.trim()) {
       const candidate = raw.applyEmail.trim().replace(/^mailto:/i, "").toLowerCase();
-      if (isValidEmail(candidate) && postTextLower.includes(candidate)) applyEmail = candidate;
+      if (isValidEmail(candidate) && postEmails.has(candidate)) applyEmail = candidate;
       if (!applyEmail) drop("applyEmail");
     }
 
@@ -212,8 +264,8 @@ export function sanitizeExtraction({ jobs } = {}, { text = "", links = [] } = {}
     if (typeof raw.applyPhone === "string" && raw.applyPhone.trim()) {
       const normalized = normalizePhone(raw.applyPhone);
       if (normalized) {
-        const tail = digitsOf(normalized).slice(-9);
-        if (tail.length >= 7 && postDigits.includes(tail)) applyPhone = normalized;
+        const wanted = digitsOf(normalized);
+        if (postPhones.some((digits) => samePhone(wanted, digits))) applyPhone = normalized;
       }
       if (!applyPhone) drop("applyPhone");
     }
@@ -221,7 +273,10 @@ export function sanitizeExtraction({ jobs } = {}, { text = "", links = [] } = {}
     // -- salary --
     let salaryMin = safeNumber(raw.salaryMin);
     let salaryMax = safeNumber(raw.salaryMax);
-    if (raw.salaryMin != null && salaryMin === undefined) drop("salaryMin");
+    // A salaryMin of 0 means "not stated", not "unpaid": no amount, no drop note.
+    const minWasZero = salaryMin === 0;
+    if (minWasZero) salaryMin = undefined;
+    if (raw.salaryMin != null && salaryMin === undefined && !minWasZero) drop("salaryMin");
     if (raw.salaryMax != null && salaryMax === undefined) drop("salaryMax");
 
     if (salaryMax !== undefined && salaryMin === undefined) {

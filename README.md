@@ -244,6 +244,116 @@ strings). When wiring this up:
 - `jobCount` is a raw number — format it into the "1,240+ Jobs" display
   string client-side, the same way the mock data does today.
 
+## Review workflow (what changed for existing job endpoints)
+
+Every job has a `reviewStatus`: `pending_review`, `published` or `rejected`.
+**Only `published` jobs are visible to the public.** Jobs created before this
+workflow have no `reviewStatus` at all and count as published (no migration
+needed). The rule lives in one place, `src/utils/jobVisibility.js`, and is
+applied to the job list, detail, categories, `?company=`, `/saved`, saving and
+`loadJob`. A hidden job returns the same `404` as a job that does not exist.
+
+Behaviour changes for existing consumers:
+
+- `POST /api/jobs` by a non-admin returns `201` with `"Job submitted for
+  review."` and the job stays hidden until an admin approves it. Admin-created
+  jobs are published immediately.
+- `PATCH /api/jobs/:id` by the owner (non-admin) of a published job sends it
+  back to `pending_review`. Admin edits never change the status. A rejected
+  job stays rejected.
+- `status` badges (`featured`, `verified`, `urgent`, `new`) are admin-only;
+  they are silently dropped from non-admin requests. `reviewStatus`, `review`,
+  `source`, `extraction`, `dedupeKey`, `applyEmail`, `applyPhone` and
+  `postedBy` can never be set through these endpoints.
+- `applicationLink`, `logoUrl` and company `website` / `logoUrl` must be
+  `http(s)` URLs (no `javascript:`, `data:`, credentials, IP-literal or
+  single-label hosts). `domain` must be a hostname. Text fields are stripped
+  of HTML tags and control / bidi characters and have length limits.
+- Public job objects gain `applyEmail`, `applyPhone` (both `null` when absent)
+  and `source` (`{ kind, channel, url }` for ingested jobs, otherwise `null`).
+  `type`, `applicationLink`, `company`, `location` and `category` can be
+  `null` on incomplete jobs (published jobs always have company, location and
+  category); `salary` is `"Not specified"` when no pay is stated.
+- `GET /api/jobs/saved` counts and pages only visible jobs.
+- Invalid or repeated query params (`?industry=a&industry=b`) are ignored
+  instead of causing a `500`.
+
+## Admin API — `/api/admin`
+
+All routes require `Authorization: Bearer <jwt>` of a user with `role: "admin"`
+(`401` without a token, `403` for other users).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/jobs` | `?reviewStatus=pending_review`, `published` or `rejected` (default `pending_review`; other values `400 INVALID_REVIEW_STATUS`), `?channel=`, `page`, `limit` (max 50). `published` includes legacy jobs. |
+| GET | `/jobs/:id` | Full admin view (`reviewStatus`, `review`, `source`, `extraction`, apply fields) plus `rawPost` (the original Telegram text; `null` once purged after 90 days). |
+| POST | `/jobs/:id/approve` | Body `{ edits?, status?, expectedUpdatedAt? }`. `edits` may only contain: title, company, domain, location, employmentType, workArrangement, salaryMin, salaryMax, salaryCurrency, salaryPeriod, category, skills, industry, experience, qualification, description, responsibilities, applicationLink, applyEmail, applyPhone. `status` sets the badges (e.g. `["verified"]`). To publish, the merged job needs title, description, company, location, category and at least one of applicationLink / applyEmail / applyPhone, otherwise `400 MISSING_FIELDS` with `missing: [...]` (`applyContact` stands for the three apply fields). Other schema problems: `400 VALIDATION_ERROR` with `fields`. Atomic: `409 NOT_PENDING` if the job is no longer pending, `409 STALE` if it changed after the admin loaded it (send the `updatedAt` you reviewed as `expectedUpdatedAt`). |
+| POST | `/jobs/:id/reject` | Body `{ reason? }` (max 500 chars). `409 NOT_PENDING` if not pending. |
+| POST | `/jobs/bulk-reject` | Body `{ ids: [1..100 ids], reason? }` → `{ rejected: n }`; only pending jobs are rejected. |
+| GET | `/telegram-channels` | Channels with poll stats and `jobCounts` per review status. |
+| POST | `/telegram-channels` | Body `{ username, kind? }` (`@name`, `name` or a `t.me/name` link; 5–32 chars `a-z 0-9 _`, starting with a letter). `kind`: `board` (one post ≈ one vacancy) or `authored` (a post may bundle several). `409 DUPLICATE_CHANNEL`. |
+| PATCH | `/telegram-channels/:id` | Only `active` and `kind`. Re-activating also resets the failure counter. There is no delete — deactivate instead. |
+
+There is no un-publish endpoint yet: a published job is taken down with
+`DELETE /api/jobs/:id`. Approve/reject/bulk actions log one audit line with
+ids only (`[admin-audit] action=... admin=... job=...`).
+
+## Telegram ingestion
+
+Jobs are pulled from **public** Telegram channels through their web preview
+(`https://t.me/s/<channel>`) — no bot and no admin rights in the channel.
+Private channels/groups are not supported by this pipeline.
+
+Flow (`src/services/ingestion`): fetch recent pages (fixed host, strict
+username check, 10 s timeout, 2 MB cap, no redirects) → parse with cheerio →
+store each post once (`TelegramPost`, raw text deleted after 90 days) → skip
+reposts by content hash → extract with Claude (structured output) → **validate
+every model value in code** (links, emails and phones must literally appear in
+the post; tracking parameters stripped; red flags and link class are computed in
+code, never taken from the model) → de-duplicate (title + company + location) →
+save as a `pending_review` job. Nothing is published automatically; an admin
+approves or rejects (see the Admin API).
+
+Run it once (cron-style, then exit):
+
+```bash
+npm run ingest
+```
+
+On Render, create a **Cron Job** that runs `npm run ingest` on the schedule you
+choose. It has no public endpoint. Overlapping runs are prevented by a lease
+in MongoDB. Exit code `1` means the run aborted (bad key / outage / every
+channel failing / lost lease) so the scheduler can alert.
+
+Environment variables (see `.env.example`; **never commit real values**):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `INGESTION_ENABLED` | `false` | Master switch; the script exits 0 doing nothing unless `true`. |
+| `ANTHROPIC_API_KEY` | — | Required when enabled. Set it in Render's environment, never in git. |
+| `INGESTION_MODEL` | `claude-haiku-5-5` | Extraction model. |
+| `INGESTION_DAILY_LLM_CAP` | `300` | Max LLM calls per UTC day (atomic). A set-but-invalid value counts as `0`. |
+| `INGESTION_MAX_POSTS_PER_CHANNEL_RUN` | `40` | Posts processed per channel per run. |
+| `INGESTION_MAX_PAGES_PER_CHANNEL` | `3` | Preview pages fetched per channel per run. |
+| `INGESTION_MAX_PENDING_PER_CHANNEL` | `200` | A channel with this many pending jobs is paused until reviewed. |
+| `INGESTION_FETCH_DELAY_MS` | `2000` | Pause between requests to t.me. |
+
+Operational notes:
+
+- A transient LLM failure (429 / 5xx / network) leaves the post `new` and is
+  retried on the next run (up to 5 attempts); five failures in a row abort the run.
+- The unique index on `dedupeKey` (`dedupeKey_unique_partial`) fails to build if
+  the database already holds duplicate keys; the pipeline then falls back to a
+  lookup-only duplicate check and logs it. Check before deploying to a database
+  that already ran an earlier version.
+- Edits validate only the modified fields, so old job documents that predate
+  the newer rules can still be edited.
+- Contact details in posts are personal data (Nigeria NDPR): raw posts are
+  purged after 90 days; consider a retention policy for rejected jobs.
+- The extracted `description`, `title`, `corrections`, `extraction.modelNotes`
+  and `rawPost` come from untrusted text: any admin UI must render them as
+  **plain text**, never as HTML.
+
 ## Known gaps intentionally not built yet
 
 - No Employer/Company account concept — `postedBy` on `Job` and `user` on

@@ -3,7 +3,7 @@ import Job from "../models/job.model.js";
 import SavedJob from "../models/savedJob.model.js";
 import { formatSalaryDisplay, formatRelativeDate, formatLongDate } from "../utils/format.utils.js";
 import { slugify } from "../utils/slugify.utils.js";
-import { PUBLIC_JOB_FILTER, isPublishedJob } from "../utils/jobVisibility.js";
+import { publicJobFilter, isPublishedJob } from "../utils/jobVisibility.js";
 
 const DEFAULT_PAGE_SIZE = 12;
 const MAX_PAGE_SIZE = 50;
@@ -104,7 +104,7 @@ const buildJobFilter = (query) => {
   }
 
   // Allow-list: non-published jobs never reach the public list or its total.
-  return { $and: [PUBLIC_JOB_FILTER, ...conditions] };
+  return { $and: [publicJobFilter(), ...conditions] };
 };
 
 const parsePagination = (query) => {
@@ -265,8 +265,12 @@ export const createJob = async (req, res) => {
   } catch (error) {
     console.error(error);
 
-    if (error.name === "ValidationError" || error.name === "CastError") {
+    if (error.name === "ValidationError") {
       return res.status(400).json({ message: error.message });
+    }
+
+    if (error.name === "CastError") {
+      return res.status(400).json({ message: `Invalid value for ${error.path}.` });
     }
 
     return res.status(500).json({
@@ -314,13 +318,19 @@ export const updateJob = async (req, res) => {
       }
     }
 
-    // An owner's edit to a live job must be re-reviewed, otherwise an approved
-    // job could be swapped for a malicious link. Admin edits never change it.
-    if (!isAdmin && isPublishedJob(job)) {
+    // An owner's edit must be re-reviewed, otherwise an approved job could be
+    // swapped for a malicious link. It is forced even when the job is already
+    // pending (markModified makes Mongoose $set it unconditionally), so an
+    // admin approving concurrently with this edit cannot publish the edited
+    // content. Rejected jobs stay rejected. Admin edits never change it.
+    if (!isAdmin && job.reviewStatus !== "rejected") {
       job.reviewStatus = "pending_review";
+      job.markModified("reviewStatus");
     }
 
-    await job.save();
+    // validateModifiedOnly: old documents may hold values the newer validators
+    // would reject; an unrelated edit must not fail on them.
+    await job.save({ validateModifiedOnly: true });
 
     return res.status(200).json({
       message: "Job updated successfully.",
@@ -329,8 +339,12 @@ export const updateJob = async (req, res) => {
   } catch (error) {
     console.error(error);
 
-    if (error.name === "ValidationError" || error.name === "CastError") {
+    if (error.name === "ValidationError") {
       return res.status(400).json({ message: error.message });
+    }
+
+    if (error.name === "CastError") {
+      return res.status(400).json({ message: `Invalid value for ${error.path}.` });
     }
 
     return res.status(500).json({
@@ -361,17 +375,38 @@ export const getSavedJobs = async (req, res) => {
   try {
     const { page, limit } = parsePagination(req.query);
 
-    const savedDocs = await SavedJob.find({ user: req.user._id })
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .populate({ path: "job", match: PUBLIC_JOB_FILTER });
+    // Count and page over VISIBLE saved jobs only. Filtering after paging
+    // would return short/empty pages and a total that includes hidden jobs.
+    const [result] = await SavedJob.aggregate([
+      { $match: { user: req.user._id } },
+      {
+        $lookup: {
+          from: Job.collection.name,
+          localField: "job",
+          foreignField: "_id",
+          pipeline: [{ $match: publicJobFilter() }, { $project: { _id: 1 } }],
+          as: "visible",
+        },
+      },
+      { $match: { "visible.0": { $exists: true } } },
+      { $sort: { createdAt: -1, _id: -1 } },
+      {
+        $facet: {
+          items: [{ $skip: (page - 1) * limit }, { $limit: limit }, { $project: { job: 1 } }],
+          count: [{ $count: "total" }],
+        },
+      },
+    ]);
 
-    const total = await SavedJob.countDocuments({ user: req.user._id });
+    const total = result?.count?.[0]?.total || 0;
+    const orderedIds = (result?.items || []).map((item) => item.job);
 
-    // A saved job that was deleted or is no longer public populates to null —
-    // skip it rather than serializing a null.
-    const jobs = savedDocs.filter((doc) => doc.job).map((doc) => serializeJob(doc.job, { saved: true }));
+    const found = await Job.find({ _id: { $in: orderedIds } });
+    const byId = new Map(found.map((job) => [job._id.toString(), job]));
+    const jobs = orderedIds
+      .map((id) => byId.get(id.toString()))
+      .filter(Boolean)
+      .map((job) => serializeJob(job, { saved: true }));
 
     return res.status(200).json({
       message: "Saved jobs retrieved successfully.",
