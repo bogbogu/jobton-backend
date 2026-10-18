@@ -328,9 +328,12 @@ export const updateJob = async (req, res) => {
       job.markModified("reviewStatus");
     }
 
-    // validateModifiedOnly: old documents may hold values the newer validators
-    // would reject; an unrelated edit must not fail on them.
-    await job.save({ validateModifiedOnly: true });
+    // Validate exactly the paths this request changed: old documents may hold
+    // values the newer validators would reject, and an unrelated edit must not
+    // fail on them. validate(paths) also surfaces uncastable values, which
+    // save({ validateModifiedOnly }) would silently drop.
+    await job.validate(job.modifiedPaths());
+    await job.save({ validateBeforeSave: false });
 
     return res.status(200).json({
       message: "Job updated successfully.",
