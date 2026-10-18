@@ -10,7 +10,7 @@ import {
   unsaveJob,
 } from "../controllers/job.controller.js";
 import protect, { optionalAuth } from "../middleware/auth.middleware.js";
-import { loadJob, requireJobOwner } from "../middleware/job.middleware.js";
+import { loadJob, loadJobForUnsave, requireJobOwner } from "../middleware/job.middleware.js";
 
 const router = express.Router();
 
@@ -23,7 +23,7 @@ router.get("/:id", optionalAuth, getJobById);
 
 router.post("/", protect, createJob);
 router.post("/:id/save", protect, loadJob, saveJob);
-router.delete("/:id/save", protect, loadJob, unsaveJob);
+router.delete("/:id/save", protect, loadJobForUnsave, unsaveJob);
 router.patch("/:id", protect, loadJob, requireJobOwner, updateJob);
 router.delete("/:id", protect, loadJob, requireJobOwner, deleteJob);
 

@@ -120,7 +120,7 @@ export const updateCompany = async (req, res) => {
       }
     }
 
-    await company.save();
+    await company.save({ validateModifiedOnly: true });
 
     return res.status(200).json({
       message: "Company updated successfully.",

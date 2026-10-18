@@ -1,4 +1,5 @@
 import Job from "../models/job.model.js";
+import { publicJobFilter } from "../utils/jobVisibility.js";
 
 export const getCategories = async (req, res) => {
   try {
@@ -6,6 +7,7 @@ export const getCategories = async (req, res) => {
       {
         $match: {
           category: { $exists: true, $ne: null },
+          ...publicJobFilter(),
         },
       },
       {
