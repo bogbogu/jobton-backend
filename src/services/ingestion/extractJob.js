@@ -151,7 +151,13 @@ const safeNumber = (value) =>
     : undefined;
 
 // Comparison form for URLs: tracking params stripped, trailing slash ignored.
-const comparableUrl = (value) => stripTrackingParams(String(value).trim()).replace(/\/+$/, "");
+const stripTrailingSlashes = (value) => {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") end -= 1;
+  return value.slice(0, end);
+};
+const comparableUrl = (value) =>
+  stripTrailingSlashes(stripTrackingParams(String(value).trim().slice(0, 2100)));
 
 const URL_IN_TEXT = /https?:\/\/[^\s<>"'`]+/gi;
 const TRAILING_PUNCTUATION_CHARS = ".,;:!?)]}>»\"'”’";

@@ -27,7 +27,7 @@ export function getConfig() {
     enabled: process.env.INGESTION_ENABLED === "true",
     model: (process.env.INGESTION_MODEL || "").trim() || DEFAULTS.model,
     dailyLlmCap: readInt("INGESTION_DAILY_LLM_CAP", DEFAULTS.dailyLlmCap),
-    maxPostsPerChannelRun: readInt("INGESTION_MAX_POSTS_PER_CHANNEL_RUN", DEFAULTS.maxPostsPerChannelRun),
+    maxPostsPerChannelRun: readInt("INGESTION_MAX_POSTS_PER_CHANNEL_RUN", DEFAULTS.maxPostsPerChannelRun, { min: 1 }),
     maxPagesPerChannel: readInt("INGESTION_MAX_PAGES_PER_CHANNEL", DEFAULTS.maxPagesPerChannel, { min: 1 }),
     maxPendingPerChannel: readInt("INGESTION_MAX_PENDING_PER_CHANNEL", DEFAULTS.maxPendingPerChannel),
     fetchDelayMs: readInt("INGESTION_FETCH_DELAY_MS", DEFAULTS.fetchDelayMs),

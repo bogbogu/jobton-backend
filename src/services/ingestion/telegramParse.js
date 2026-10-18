@@ -10,13 +10,23 @@ const SKIPPED_TAGS = new Set(["script", "style", "template", "noscript"]);
 
 // "https://example.com/" and "example.com" are the same destination for the
 // purpose of deciding whether a link label needs to be repeated next to it.
+// Linear-time replacement for a trailing-slash regex (quadratic on a long run of slashes).
+const stripTrailingSlashes = (value) => {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end -= 1;
+  return value.slice(0, end);
+};
+
+// Inputs are capped first: labels and hrefs come from untrusted pages.
 const looseUrl = (value) =>
-  String(value)
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/^www\./, "")
-    .replace(/\/+$/, "");
+  stripTrailingSlashes(
+    String(value)
+      .slice(0, 2100)
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:[/][/]/, '')
+      .replace(/^www[.]/, '')
+  );
 
 // Walks a cheerio/htmlparser node tree and returns plain text. Entities are
 // already decoded by the parser (&#33; -> "!"). <br> becomes a newline.
@@ -48,10 +58,18 @@ function nodeText(node, links) {
   return `${label} (${href})`;
 }
 
+// Linear-time throughout: the raw text is capped BEFORE any regex runs, and
+// per-line trailing whitespace is removed with trimEnd() instead of a
+// whitespace-then-newline regex (quadratic on a long run of spaces).
+const MAX_RAW_CHARS = MAX_TEXT_CHARS * 5;
+
 function normalizeText(raw) {
   const tidy = String(raw)
+    .slice(0, MAX_RAW_CHARS)
     .replace(/\r\n?/g, "\n")
-    .replace(/[ \t ]+\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n");
   return cleanText(tidy).slice(0, MAX_TEXT_CHARS).trim();
 }
