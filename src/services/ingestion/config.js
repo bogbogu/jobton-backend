@@ -13,11 +13,13 @@ const DEFAULTS = {
   fetchDelayMs: 2000,
 };
 
+// Unset -> the default. Set but invalid (negative, NaN, text) -> 0, i.e. fail
+// CLOSED: a typo in a spending cap must never silently re-enable the default.
 const readInt = (name, fallback, { min = 0 } = {}) => {
   const raw = process.env[name];
   if (raw === undefined || raw === "") return fallback;
   const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= min ? value : fallback;
+  return Number.isSafeInteger(value) && value >= min ? value : min;
 };
 
 export function getConfig() {

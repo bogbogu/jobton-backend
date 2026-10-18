@@ -45,6 +45,12 @@ export async function reserveLlmCall(cap, now = new Date()) {
   return retried !== null;
 }
 
+// LLM calls already reserved today (0 when there is no document yet).
+export async function getLlmCallsToday(now = new Date()) {
+  const doc = await IngestionUsage.findOne({ date: utcDay(now) }, { llmCalls: 1 }).lean();
+  return doc?.llmCalls || 0;
+}
+
 // Adds token counts to today's document.
 export async function recordUsage({ input = 0, output = 0 } = {}, now = new Date()) {
   const date = utcDay(now);

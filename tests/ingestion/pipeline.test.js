@@ -6,9 +6,12 @@ import TelegramChannel from "../../src/models/telegramChannel.model.js";
 import TelegramPost from "../../src/models/telegramPost.model.js";
 import IngestionLock, { acquireLease } from "../../src/models/ingestionLock.model.js";
 import IngestionUsage from "../../src/models/ingestionUsage.model.js";
-import { runIngestion } from "../../src/services/ingestion/pipeline.js";
+import { updateChannel } from "../../src/controllers/adminChannel.controller.js";
+import { computeRedFlags } from "../../src/services/ingestion/redFlags.js";
+import { ingestionExitCode, isTransientLlmError, runIngestion } from "../../src/services/ingestion/pipeline.js";
 import {
   baseJob,
+  htmlResponse,
   jobResponse,
   makeFakeClient,
   makeFakeFetch,
@@ -16,6 +19,12 @@ import {
   silentLog,
   testConfig,
 } from "./helpers.js";
+
+// Spy-wrapped so a test can assert that red flags are not computed for duplicates.
+vi.mock("../../src/services/ingestion/redFlags.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, computeRedFlags: vi.fn(actual.computeRedFlags) };
+});
 
 let mongoServer;
 
@@ -257,7 +266,7 @@ describe("runIngestion", () => {
     expect(await Job.countDocuments()).toBe(0);
   });
 
-  it("records a per-post failure with a short error and carries on", async () => {
+  it("records a permanent per-post failure with a short error and carries on", async () => {
     await TelegramChannel.create({ username: CHANNEL });
     const fetchImpl = makeFakeFetch({
       [pageUrl()]: makePage(CHANNEL, [
@@ -266,18 +275,119 @@ describe("runIngestion", () => {
       ]),
     });
     const client = makeFakeClient((_, i) => {
-      if (i === 0) throw Object.assign(new Error("boom sk-ant-SECRET request-body"), { status: 529 });
+      if (i === 0) throw Object.assign(new Error("boom sk-ant-SECRET request-body"), { status: 400 });
       return jobResponse({ title: "Accountant B" });
     });
 
     const summary = await run({ fetchImpl, client });
 
-    expect(summary).toMatchObject({ failed: 1, extracted: 1, jobsCreated: 1, llmCalls: 2 });
+    expect(summary).toMatchObject({ failed: 1, transientFailures: 0, extracted: 1, jobsCreated: 1, llmCalls: 2 });
     const failed = await TelegramPost.findOne({ messageId: 10 }).lean();
     expect(failed.status).toBe("failed");
-    expect(failed.error).toBe("LLM request failed (status 529).");
+    expect(failed.error).toBe("LLM request failed (status 400).");
     expect(failed.error).not.toContain("SECRET");
     expect((await TelegramPost.findOne({ messageId: 11 }).lean()).status).toBe("extracted");
+  });
+
+  describe("transient LLM failures", () => {
+    const onePost = () =>
+      makeFakeFetch({ [pageUrl()]: makePage(CHANNEL, [{ id: 10, text: jobText(1) }]) });
+
+    // 5xx (old behaviour: this was marked failed forever), 429, and an error with no status (timeout / network)
+    it.each([
+      ["529", Object.assign(new Error("overloaded sk-ant-SECRET"), { status: 529 }), "LLM request failed (status 529)."],
+      ["429", Object.assign(new Error("slow down"), { status: 429 }), "LLM request failed (status 429)."],
+      ["no status", new Error("connect ETIMEDOUT"), "LLM request failed."],
+    ])("leaves the post 'new' and retries it on the next run (%s)", async (_label, thrown, expectedError) => {
+      await TelegramChannel.create({ username: CHANNEL });
+      const fetchImpl = onePost();
+      let failNext = true;
+      const client = makeFakeClient(() => {
+        if (failNext) throw thrown;
+        return jobResponse({ title: "Accountant" });
+      });
+
+      const summary = await run({ fetchImpl, client });
+
+      expect(summary).toMatchObject({ failed: 0, transientFailures: 1, extracted: 0, abortedByErrors: false });
+      const post = await TelegramPost.findOne({ messageId: 10 }).lean();
+      expect(post.status).toBe("new");
+      expect(post.error).toBe(expectedError);
+      expect(post.error).not.toContain("SECRET");
+      expect(post.attempts).toBe(1);
+
+      failNext = false;
+      const retry = await run({ fetchImpl, client });
+      expect(retry).toMatchObject({ stored: 0, extracted: 1, jobsCreated: 1, failed: 0 });
+      const done = await TelegramPost.findOne({ messageId: 10 }).lean();
+      expect(done.status).toBe("extracted");
+      expect(done.error).toBeUndefined();
+    });
+
+    it("still counts transient failures towards the 5-in-a-row abort, without failing any post", async () => {
+      await TelegramChannel.create({ username: CHANNEL });
+      const fetchImpl = makeFakeFetch({
+        [pageUrl()]: makePage(CHANNEL, [1, 2, 3, 4, 5, 6, 7].map((n) => ({ id: n, text: jobText(n) }))),
+      });
+      const client = makeFakeClient(() => {
+        throw Object.assign(new Error("unavailable"), { status: 503 });
+      });
+
+      const summary = await run({ fetchImpl, client });
+
+      expect(client.calls).toHaveLength(5);
+      expect(summary).toMatchObject({ failed: 0, transientFailures: 5, abortedByErrors: true });
+      expect(await TelegramPost.countDocuments({ status: "new" })).toBe(7);
+      expect(await TelegramPost.countDocuments({ status: "failed" })).toBe(0);
+    });
+
+    it("gives up on a post that keeps failing transiently (marks it failed on the 5th attempt)", async () => {
+      await TelegramChannel.create({ username: CHANNEL });
+      const fetchImpl = onePost();
+      const client = makeFakeClient(() => {
+        throw Object.assign(new Error("unavailable"), { status: 500 });
+      });
+      await run({ fetchImpl, client }); // stores the post, attempt 1
+      await TelegramPost.updateOne({ messageId: 10 }, { attempts: 4 });
+
+      const summary = await run({ fetchImpl, client });
+
+      expect(summary).toMatchObject({ failed: 1, transientFailures: 0 });
+      expect((await TelegramPost.findOne({ messageId: 10 }).lean()).status).toBe("failed");
+    });
+
+    it("keeps status 'failed' for refusals, unparsable output and non-429 4xx", async () => {
+      await TelegramChannel.create({ username: CHANNEL });
+      const fetchImpl = makeFakeFetch({
+        [pageUrl()]: makePage(CHANNEL, [
+          { id: 1, text: jobText(1) },
+          { id: 2, text: jobText(2) },
+          { id: 3, text: jobText(3) },
+        ]),
+      });
+      const responses = [
+        { stop_reason: "refusal", usage: { input_tokens: 10, output_tokens: 0 } },
+        { stop_reason: "max_tokens", parsed_output: null, usage: { input_tokens: 10, output_tokens: 5 } },
+      ];
+      let call = 0;
+      const client = {
+        calls: [],
+        messages: {
+          parse: async () => {
+            const index = call;
+            call += 1;
+            if (index < responses.length) return responses[index];
+            throw Object.assign(new Error("not found"), { status: 404 });
+          },
+        },
+      };
+
+      const summary = await run({ fetchImpl, client });
+
+      expect(summary).toMatchObject({ failed: 3, transientFailures: 0 });
+      expect(await TelegramPost.countDocuments({ status: "failed" })).toBe(3);
+      expect((await TelegramPost.findOne({ messageId: 1 }).lean()).error).toBe("Model refused the request.");
+    });
   });
 
   it("skips empty, image-only and very short posts without an LLM call", async () => {
@@ -358,7 +468,7 @@ describe("runIngestion", () => {
 
   it("returns lease_held and does nothing when another run holds the lease", async () => {
     await TelegramChannel.create({ username: CHANNEL });
-    expect(await acquireLease("telegram-ingestion", 60_000)).toBe(true);
+    expect(await acquireLease("telegram-ingestion", 60_000)).toBeTruthy();
     const fetchImpl = makeFakeFetch({ [pageUrl()]: makePage(CHANNEL, [{ id: 1, text: jobText(1) }]) });
     const client = distinctJobs();
 
@@ -373,7 +483,7 @@ describe("runIngestion", () => {
     await TelegramChannel.create({ username: CHANNEL });
     const fetchImpl = makeFakeFetch({ [pageUrl()]: makePage(CHANNEL, []) });
     await run({ fetchImpl, client: distinctJobs() });
-    expect(await acquireLease("telegram-ingestion", 60_000)).toBe(true);
+    expect(await acquireLease("telegram-ingestion", 60_000)).toBeTruthy();
     await IngestionLock.deleteMany({});
 
     const spy = vi.spyOn(TelegramChannel, "find").mockImplementationOnce(() => {
@@ -381,7 +491,7 @@ describe("runIngestion", () => {
     });
     await expect(run({ fetchImpl, client: distinctJobs() })).rejects.toThrow("db down");
     spy.mockRestore();
-    expect(await acquireLease("telegram-ingestion", 60_000)).toBe(true);
+    expect(await acquireLease("telegram-ingestion", 60_000)).toBeTruthy();
   });
 
   it("tracks channel failures, resets them on success and deactivates after 10", async () => {
@@ -491,5 +601,331 @@ describe("runIngestion", () => {
 
     expect(summary).toMatchObject({ extracted: 1, jobsCreated: 2, llmCalls: 1 });
     expect(await Job.countDocuments({ reviewStatus: "pending_review" })).toBe(2);
+  });
+
+  describe("isTransientLlmError", () => {
+    it("classifies by status, with the message as fallback", () => {
+      expect(isTransientLlmError(new Error("LLM request failed."))).toBe(true);
+      expect(isTransientLlmError(new Error("LLM request failed (status 500)."))).toBe(true);
+      expect(isTransientLlmError(new Error("LLM request failed (status 429)."))).toBe(true);
+      expect(isTransientLlmError(new Error("LLM request failed (status 401)."))).toBe(false);
+      expect(isTransientLlmError(new Error("LLM request failed (status 400)."))).toBe(false);
+      expect(isTransientLlmError(Object.assign(new Error("x"), { status: 503 }))).toBe(true);
+      expect(isTransientLlmError(Object.assign(new Error("x"), { status: 404 }))).toBe(false);
+      expect(isTransientLlmError(new Error("Model refused the request."))).toBe(false);
+      expect(isTransientLlmError(new Error("Model returned no structured output (stop_reason=max_tokens)."))).toBe(false);
+    });
+  });
+
+  describe("storing posts", () => {
+    const onePost = () => makeFakeFetch({ [pageUrl()]: makePage(CHANNEL, [{ id: 10, text: jobText(1) }]) });
+
+    it("rethrows non-duplicate bulk write errors and does not advance the high-water mark", async () => {
+      const channel = await TelegramChannel.create({ username: CHANNEL });
+      const spy = vi
+        .spyOn(TelegramPost, "insertMany")
+        .mockRejectedValueOnce(
+          Object.assign(new Error("document failed validation"), { writeErrors: [{ code: 121 }], insertedCount: 0 })
+        );
+
+      const summary = await run({ fetchImpl: onePost(), client: distinctJobs() });
+      spy.mockRestore();
+
+      expect(summary).toMatchObject({ stored: 0, channelsAttempted: 1, channelsFailed: 1 });
+      const doc = await TelegramChannel.findById(channel._id).lean();
+      expect(doc.lastMessageId).toBe(0);
+      expect(doc.consecutiveFailures).toBe(1);
+      expect(doc.lastError).toBe("document failed validation");
+    });
+
+    it("rethrows a mix of duplicate and other write errors", async () => {
+      const channel = await TelegramChannel.create({ username: CHANNEL });
+      const spy = vi
+        .spyOn(TelegramPost, "insertMany")
+        .mockRejectedValueOnce(Object.assign(new Error("mixed"), { writeErrors: [{ code: 11000 }, { code: 121 }] }));
+
+      await run({ fetchImpl: onePost(), client: distinctJobs() });
+      spy.mockRestore();
+
+      expect((await TelegramChannel.findById(channel._id).lean()).lastMessageId).toBe(0);
+    });
+
+    it("tolerates duplicate-key write errors (lost race) and still advances", async () => {
+      const channel = await TelegramChannel.create({ username: CHANNEL });
+      const spy = vi
+        .spyOn(TelegramPost, "insertMany")
+        .mockRejectedValueOnce(
+          Object.assign(new Error("E11000 duplicate key"), { code: 11000, writeErrors: [{ code: 11000 }] })
+        );
+
+      const summary = await run({ fetchImpl: onePost(), client: distinctJobs() });
+      spy.mockRestore();
+
+      expect(summary).toMatchObject({ channelsFailed: 0 });
+      expect((await TelegramChannel.findById(channel._id).lean()).lastMessageId).toBe(10);
+    });
+  });
+
+  describe("lease ownership", () => {
+    it("stops cleanly when the lease is lost mid-run and does not release the new holder's lease", async () => {
+      await TelegramChannel.create({ username: CHANNEL });
+      await TelegramChannel.create({ username: "second_chan" });
+      const takeOver = async () => {
+        await IngestionLock.updateOne(
+          { name: "telegram-ingestion" },
+          { $set: { owner: "someone-else", leaseUntil: new Date(Date.now() + 3_600_000) } }
+        );
+        return htmlResponse(makePage(CHANNEL, [{ id: 1, text: jobText(1) }]));
+      };
+      const fetchImpl = makeFakeFetch({
+        [pageUrl()]: takeOver,
+        [pageUrl("second_chan")]: makePage("second_chan", [{ id: 50, text: jobText(50) }]),
+      });
+      const client = distinctJobs();
+
+      const summary = await run({ fetchImpl, client });
+
+      expect(summary.leaseLost).toBe(true);
+      expect(fetchImpl.calls.map((call) => call.url)).toEqual([pageUrl()]);
+      expect(client.calls).toHaveLength(0);
+      expect(ingestionExitCode(summary)).toBe(1);
+
+      const lock = await IngestionLock.findOne({ name: "telegram-ingestion" }).lean();
+      expect(lock.owner).toBe("someone-else");
+      expect(lock.leaseUntil.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it("renews the lease while working through many posts", async () => {
+      await TelegramChannel.create({ username: CHANNEL });
+      const fetchImpl = makeFakeFetch({
+        [pageUrl()]: makePage(CHANNEL, Array.from({ length: 15 }, (_, i) => ({ id: i + 1, text: jobText(i + 1) }))),
+      });
+      const leaseUntilAt = {};
+      const client = makeFakeClient(async (_, i) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        if (i === 0 || i === 12) {
+          leaseUntilAt[i] = (await IngestionLock.findOne({ name: "telegram-ingestion" }).lean()).leaseUntil.getTime();
+        }
+        return jobResponse({ title: `Accountant ${i}` });
+      });
+
+      await run({ fetchImpl, client });
+
+      expect(client.calls).toHaveLength(15);
+      expect(leaseUntilAt[12]).toBeGreaterThan(leaseUntilAt[0]);
+    });
+  });
+
+  describe("job de-duplication", () => {
+    it("has a partial unique index on dedupeKey", async () => {
+      const indexes = await Job.collection.indexes();
+      const dedupe = indexes.filter((index) => index.key.dedupeKey === 1);
+      expect(dedupe).toHaveLength(1);
+      expect(dedupe[0].unique).toBe(true);
+      expect(dedupe[0].partialFilterExpression).toEqual({ dedupeKey: { $type: "string" } });
+
+      const make = (n, dedupeKey) =>
+        Job.create({
+          title: `Role ${n}`,
+          description: "d",
+          reviewStatus: "pending_review",
+          source: { kind: "telegram", channel: "x_channel", messageId: n },
+          ...(dedupeKey ? { dedupeKey } : {}),
+        });
+      await make(1);
+      await make(2); // jobs without a key are unconstrained
+      await make(3, "same-key");
+      await expect(make(4, "same-key")).rejects.toMatchObject({ code: 11000 });
+    });
+
+    it("treats an E11000 on dedupeKey (lost race after the lookup) as a duplicate", async () => {
+      await TelegramChannel.create({ username: CHANNEL });
+      const client = makeFakeClient(() => jobResponse({ title: "Accountant" }));
+      await run({
+        fetchImpl: makeFakeFetch({ [pageUrl()]: makePage(CHANNEL, [{ id: 100, text: jobText(1) }]) }),
+        client,
+      });
+      const original = await Job.findOne({}).lean();
+
+      // The existence check misses (as if the other writer had not committed yet).
+      const spy = vi.spyOn(Job, "findOne").mockReturnValueOnce({ lean: async () => null });
+      const summary = await run({
+        fetchImpl: makeFakeFetch({
+          [pageUrl()]: makePage(CHANNEL, [
+            { id: 100, text: jobText(1) },
+            { id: 101, text: jobText(2, "Different wording entirely.") },
+          ]),
+        }),
+        client,
+      });
+      spy.mockRestore();
+
+      expect(summary).toMatchObject({ duplicates: 1, failed: 0, jobsCreated: 0 });
+      expect(await Job.countDocuments()).toBe(1);
+      const post = await TelegramPost.findOne({ messageId: 101 }).lean();
+      expect(post.status).toBe("duplicate");
+      expect(String(post.job)).toBe(String(original._id));
+    });
+
+    it("does not compute red flags for a duplicate", async () => {
+      await TelegramChannel.create({ username: CHANNEL });
+      const client = makeFakeClient(() => jobResponse({ title: "Accountant" }));
+      const fetchImpl = makeFakeFetch({
+        [pageUrl()]: makePage(CHANNEL, [
+          { id: 100, text: jobText(1) },
+          { id: 101, text: jobText(2, "Different wording entirely.") },
+        ]),
+      });
+      computeRedFlags.mockClear();
+
+      const summary = await run({ fetchImpl, client });
+
+      expect(summary).toMatchObject({ jobsCreated: 1, duplicates: 1 });
+      expect(computeRedFlags).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("channel handling", () => {
+    it("does not process a channel that was auto-deactivated while polling", async () => {
+      const channel = await TelegramChannel.create({ username: CHANNEL, consecutiveFailures: 9 });
+      await TelegramPost.create({ channel: CHANNEL, messageId: 5, text: jobText(5), status: "new" });
+      const client = distinctJobs();
+
+      const summary = await run({ fetchImpl: makeFakeFetch({}), client });
+
+      expect((await TelegramChannel.findById(channel._id).lean()).active).toBe(false);
+      expect(client.calls).toHaveLength(0);
+      expect(summary.llmCalls).toBe(0);
+      expect((await TelegramPost.findOne({ messageId: 5 }).lean()).status).toBe("new");
+    });
+
+    it("shares a scarce daily cap between channels instead of letting the first one use it all", async () => {
+      await TelegramChannel.create({ username: "busy_chan" });
+      await TelegramChannel.create({ username: "quiet_chan" });
+      const fetchImpl = makeFakeFetch({
+        [pageUrl("busy_chan")]: makePage("busy_chan", [1, 2, 3, 4].map((n) => ({ id: n, text: jobText(n) }))),
+        [pageUrl("quiet_chan")]: makePage("quiet_chan", [{ id: 50, text: jobText(50) }]),
+      });
+      const client = distinctJobs();
+
+      const summary = await run({ fetchImpl, client, config: { dailyLlmCap: 2 } });
+
+      expect(summary).toMatchObject({ llmCalls: 2, stoppedByCap: true, extracted: 2 });
+      expect(await Job.countDocuments({ "source.channel": "busy_chan" })).toBe(1);
+      expect(await Job.countDocuments({ "source.channel": "quiet_chan" })).toBe(1);
+      // the busy channel continues oldest-first on a later day
+      expect(await TelegramPost.countDocuments({ channel: "busy_chan", status: "new" })).toBe(3);
+    });
+
+    it("counts gapSkipped when the page limit stops paging before the old high-water mark", async () => {
+      await TelegramChannel.create({ username: CHANNEL, lastMessageId: 40 });
+      const pages = {
+        [pageUrl()]: makePage(CHANNEL, [{ id: 61, text: jobText(61) }, { id: 62, text: jobText(62) }]),
+        [pageUrl(CHANNEL, 61)]: makePage(CHANNEL, [{ id: 50, text: jobText(50) }, { id: 51, text: jobText(51) }]),
+        [pageUrl(CHANNEL, 50)]: makePage(CHANNEL, [{ id: 41, text: jobText(41) }]),
+      };
+      const logs = [];
+
+      const limited = await runIngestion({
+        fetchImpl: makeFakeFetch(pages),
+        client: distinctJobs(),
+        config: testConfig({ maxPagesPerChannel: 2 }),
+        sleep: async () => {},
+        log: (message) => logs.push(message),
+      });
+      expect(limited.gapSkipped).toBe(1);
+      expect(logs.join("\n")).toContain("41-49");
+
+      await TelegramChannel.updateOne({}, { lastMessageId: 40 });
+      const complete = await run({
+        fetchImpl: makeFakeFetch(pages),
+        client: distinctJobs(),
+        config: { maxPagesPerChannel: 5 },
+      });
+      expect(complete.gapSkipped).toBe(0);
+    });
+  });
+
+  describe("exit code", () => {
+    it("is 1 when the run aborted on errors, lost its lease, or every attempted channel failed to poll", async () => {
+      expect(ingestionExitCode({ abortedByErrors: true, channelsAttempted: 1, channelsFailed: 0 })).toBe(1);
+      expect(ingestionExitCode({ leaseLost: true, channelsAttempted: 1, channelsFailed: 0 })).toBe(1);
+      expect(ingestionExitCode({ channelsAttempted: 2, channelsFailed: 2 })).toBe(1);
+      expect(ingestionExitCode({ channelsAttempted: 2, channelsFailed: 1 })).toBe(0);
+      expect(ingestionExitCode({ channelsAttempted: 0, channelsFailed: 0 })).toBe(0);
+      expect(ingestionExitCode({ skipped: "lease_held" })).toBe(0);
+
+      await TelegramChannel.create({ username: CHANNEL });
+      await TelegramChannel.create({ username: "second_chan" });
+      const allFail = await run({ fetchImpl: makeFakeFetch({}), client: distinctJobs() });
+      expect(allFail).toMatchObject({ channels: 2, channelsAttempted: 2, channelsFailed: 2 });
+      expect(ingestionExitCode(allFail)).toBe(1);
+
+      const someFail = await run({
+        fetchImpl: makeFakeFetch({ [pageUrl()]: makePage(CHANNEL, []) }),
+        client: distinctJobs(),
+      });
+      expect(someFail).toMatchObject({ channelsAttempted: 2, channelsFailed: 1 });
+      expect(ingestionExitCode(someFail)).toBe(0);
+    });
+  });
+
+  describe("indexes", () => {
+    it("has the compound post index (no standalone status index) and the public-categories job index", async () => {
+      const postKeys = (await TelegramPost.collection.indexes()).map((index) => JSON.stringify(index.key));
+      expect(postKeys).toContain(JSON.stringify({ channel: 1, status: 1, messageId: 1 }));
+      expect(postKeys).not.toContain(JSON.stringify({ status: 1 }));
+
+      const jobKeys = (await Job.collection.indexes()).map((index) => JSON.stringify(index.key));
+      expect(jobKeys).toContain(JSON.stringify({ reviewStatus: 1, category: 1 }));
+    });
+  });
+
+  describe("admin channel re-activation", () => {
+    const callUpdate = async (id, body) => {
+      const res = {
+        statusCode: 200,
+        body: null,
+        status(code) {
+          this.statusCode = code;
+          return this;
+        },
+        json(payload) {
+          this.body = payload;
+          return this;
+        },
+      };
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      await updateChannel({ params: { id: String(id) }, body, user: { _id: new mongoose.Types.ObjectId() } }, res);
+      info.mockRestore();
+      return res;
+    };
+
+    it("resets consecutiveFailures and lastError when a channel is re-activated", async () => {
+      const channel = await TelegramChannel.create({
+        username: CHANNEL,
+        active: false,
+        consecutiveFailures: 10,
+        lastError: "Telegram returned HTTP 404.",
+      });
+
+      const res = await callUpdate(channel._id, { active: true });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.channel).toMatchObject({ active: true, consecutiveFailures: 0, lastError: null });
+      const doc = await TelegramChannel.findById(channel._id).lean();
+      expect(doc.consecutiveFailures).toBe(0);
+      expect(doc.lastError).toBeUndefined();
+    });
+
+    it("leaves failure state alone when only the kind changes or the channel is deactivated", async () => {
+      const channel = await TelegramChannel.create({ username: CHANNEL, consecutiveFailures: 3, lastError: "boom" });
+
+      await callUpdate(channel._id, { kind: "authored" });
+      await callUpdate(channel._id, { active: false });
+
+      const doc = await TelegramChannel.findById(channel._id).lean();
+      expect(doc).toMatchObject({ kind: "authored", active: false, consecutiveFailures: 3, lastError: "boom" });
+    });
   });
 });

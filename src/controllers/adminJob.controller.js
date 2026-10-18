@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import Job from "../models/job.model.js";
 import TelegramPost from "../models/telegramPost.model.js";
 import { serializeJob } from "./job.controller.js";
-import { PUBLIC_JOB_FILTER, REVIEW_STATUSES } from "../utils/jobVisibility.js";
+import { publicJobFilter, REVIEW_STATUSES } from "../utils/jobVisibility.js";
 import { cleanText } from "../utils/validators.utils.js";
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -111,7 +111,7 @@ const parsePagination = (query) => {
 
 const buildReviewStatusFilter = (reviewStatus) =>
   // Legacy documents have no reviewStatus and count as published.
-  reviewStatus === "published" ? PUBLIC_JOB_FILTER : { reviewStatus };
+  reviewStatus === "published" ? publicJobFilter() : { reviewStatus };
 
 export const listAdminJobs = async (req, res) => {
   try {
@@ -247,6 +247,19 @@ export const approveJob = async (req, res) => {
       });
     }
 
+    // Optional version check: the review UI sends the updatedAt of the version
+    // the admin actually looked at, so an owner edit made in the meantime
+    // cannot be approved unseen.
+    if (body.expectedUpdatedAt !== undefined) {
+      const expected = new Date(body.expectedUpdatedAt);
+      if (Number.isNaN(expected.getTime()) || expected.getTime() !== current.updatedAt.getTime()) {
+        return res.status(409).json({
+          message: "This job changed after you opened it. Reload it and review again.",
+          error: "STALE",
+        });
+      }
+    }
+
     const appliedEdits = {};
     for (const field of APPROVAL_EDITABLE_FIELDS) {
       if (hasOwn(edits, field)) {
@@ -302,7 +315,9 @@ export const approveJob = async (req, res) => {
     }
 
     const published = await Job.findOneAndUpdate(
-      { _id: current._id, reviewStatus: "pending_review" },
+      // updatedAt in the filter: an owner edit landing between our read and
+      // this write changes it, so unseen content is never published.
+      { _id: current._id, reviewStatus: "pending_review", updatedAt: current.updatedAt },
       {
         $set: {
           ...set,
@@ -315,6 +330,13 @@ export const approveJob = async (req, res) => {
     );
 
     if (!published) {
+      const latest = await Job.findById(current._id).select("reviewStatus");
+      if (latest && latest.reviewStatus === "pending_review") {
+        return res.status(409).json({
+          message: "This job changed after you opened it. Reload it and review again.",
+          error: "STALE",
+        });
+      }
       return res.status(409).json({
         message: "Job is not pending review.",
         error: "NOT_PENDING",

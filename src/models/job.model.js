@@ -18,6 +18,13 @@ const SOURCE_KINDS = ["telegram"];
 // Jobs that come from an ingestion source (source.kind set) are often
 // incomplete; they wait in review until an admin fills the gaps. Jobs posted
 // directly through the API keep the original required fields.
+//
+// This reads `this.source`, so it only works when `this` is a document, i.e.
+// validation of save()/create()/doc.validate(). Update validators
+// (runValidators on findOneAndUpdate/updateOne) run with the Query as `this`:
+// `this.source` is undefined there, so every field would be treated as
+// required. Never rely on update validators for ingested jobs; validate a
+// document built from the merged values instead (see adminJob.controller.js).
 function requiredUnlessIngested() {
   return !(this.source && this.source.kind);
 }
@@ -242,7 +249,10 @@ const JobSchema = new mongoose.Schema(
     },
 
     // Normalized hash of title|company|location used to link repeat postings.
-    dedupeKey: { type: String, default: undefined, index: true },
+    // Uniqueness is declared below as a partial unique index (jobs without a
+    // dedupeKey are not constrained). Rejected jobs deliberately keep their key
+    // so the same spam is not queued for review again.
+    dedupeKey: { type: String, default: undefined },
   },
   {
     timestamps: true,
@@ -264,6 +274,18 @@ JobSchema.index({ category: 1 });
 JobSchema.index({ employmentType: 1 });
 JobSchema.index({ industry: 1 });
 JobSchema.index({ reviewStatus: 1, createdAt: -1 });
+// Public categories aggregate (published jobs grouped by category).
+JobSchema.index({ reviewStatus: 1, category: 1 });
+// Makes de-duplication atomic: two concurrent runs cannot both insert the same
+// key. The pipeline treats E11000 on this index as "duplicate".
+JobSchema.index(
+  { dedupeKey: 1 },
+  {
+    name: "dedupeKey_unique_partial",
+    unique: true,
+    partialFilterExpression: { dedupeKey: { $type: "string" } },
+  }
+);
 JobSchema.index({ "source.channel": 1, "source.messageId": 1 }, { sparse: true });
 
 export const JOB_SALARY_CURRENCIES = SALARY_CURRENCIES;

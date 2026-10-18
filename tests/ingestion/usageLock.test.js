@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import IngestionLock, { acquireLease, releaseLease } from "../../src/models/ingestionLock.model.js";
+import IngestionLock, { acquireLease, releaseLease, renewLease } from "../../src/models/ingestionLock.model.js";
 import IngestionUsage, { recordUsage, reserveLlmCall } from "../../src/models/ingestionUsage.model.js";
 
 let mongoServer;
@@ -70,15 +70,19 @@ describe("recordUsage", () => {
 describe("leases", () => {
   it("lets only one holder in until the lease is released or expires", async () => {
     const t0 = new Date("2026-10-18T10:00:00Z");
-    expect(await acquireLease("job", 60_000, t0)).toBe(true);
-    expect(await acquireLease("job", 60_000, new Date(t0.getTime() + 1000))).toBe(false);
-    expect(await acquireLease("other", 60_000, t0)).toBe(true);
+    const first = await acquireLease("job", 60_000, t0);
+    expect(first).toEqual(expect.any(String));
+    expect(first.length).toBeGreaterThan(0);
+    expect(await acquireLease("job", 60_000, new Date(t0.getTime() + 1000))).toBeNull();
+    expect(await acquireLease("other", 60_000, t0)).toBeTruthy();
 
-    await releaseLease("job");
-    expect(await acquireLease("job", 60_000, new Date(t0.getTime() + 2000))).toBe(true);
+    expect(await releaseLease("job", first)).toBe(true);
+    const second = await acquireLease("job", 60_000, new Date(t0.getTime() + 2000));
+    expect(second).toBeTruthy();
+    expect(second).not.toBe(first);
 
     // expired lease (crashed run) can be taken over
-    expect(await acquireLease("job", 60_000, new Date(t0.getTime() + 10 * 60_000))).toBe(true);
+    expect(await acquireLease("job", 60_000, new Date(t0.getTime() + 10 * 60_000))).toBeTruthy();
     expect(await IngestionLock.countDocuments({ name: "job" })).toBe(1);
   });
 
@@ -86,5 +90,36 @@ describe("leases", () => {
     const now = new Date();
     const results = await Promise.all(Array.from({ length: 10 }, () => acquireLease("race", 60_000, now)));
     expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
+  it("releases only for the owner: a stale holder cannot release a newer lease", async () => {
+    const t0 = new Date("2026-10-18T10:00:00Z");
+    const stale = await acquireLease("job", 60_000, t0);
+    // the first lease expires and a second run takes over
+    const current = await acquireLease("job", 60_000, new Date(t0.getTime() + 120_000));
+    expect(current).toBeTruthy();
+
+    expect(await releaseLease("job", stale)).toBe(false);
+    expect(await releaseLease("job")).toBe(false);
+    // still held by the current owner
+    expect(await acquireLease("job", 60_000, new Date(t0.getTime() + 121_000))).toBeNull();
+
+    expect(await releaseLease("job", current)).toBe(true);
+    expect(await acquireLease("job", 60_000, new Date(t0.getTime() + 121_000))).toBeTruthy();
+  });
+
+  it("renews only for the owner and extends the expiry", async () => {
+    const t0 = new Date("2026-10-18T10:00:00Z");
+    const owner = await acquireLease("job", 60_000, t0);
+
+    // without renewal the lease would be free at t0 + 90s
+    expect(await renewLease("job", owner, 60_000, new Date(t0.getTime() + 50_000))).toBe(true);
+    expect(await acquireLease("job", 60_000, new Date(t0.getTime() + 90_000))).toBeNull();
+    expect(await acquireLease("job", 60_000, new Date(t0.getTime() + 111_000))).toBeTruthy();
+
+    // that took the lease over: the old owner can no longer renew
+    expect(await renewLease("job", owner, 60_000, new Date(t0.getTime() + 112_000))).toBe(false);
+    expect(await renewLease("job", undefined, 60_000)).toBe(false);
+    expect(await renewLease("missing", owner, 60_000)).toBe(false);
   });
 });

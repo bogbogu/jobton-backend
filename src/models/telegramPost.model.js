@@ -34,9 +34,14 @@ const TelegramPostSchema = new mongoose.Schema(
     // cross-channel copies BEFORE spending an LLM call.
     contentHash: { type: String, index: true },
 
-    status: { type: String, enum: TELEGRAM_POST_STATUSES, default: "new", index: true },
+    // Indexed through the compound { channel, status, messageId } below.
+    status: { type: String, enum: TELEGRAM_POST_STATUSES, default: "new" },
     job: { type: mongoose.Schema.Types.ObjectId, ref: "Job", default: undefined },
     error: { type: String, maxlength: 300, default: undefined },
+
+    // Transient LLM failures leave the post "new" and bump this; after
+    // too many the pipeline gives up and marks it "failed".
+    attempts: { type: Number, default: 0, min: 0 },
 
     fetchedAt: { type: Date, default: Date.now },
   },
@@ -44,6 +49,8 @@ const TelegramPostSchema = new mongoose.Schema(
 );
 
 TelegramPostSchema.index({ channel: 1, messageId: 1 }, { unique: true });
+// Serves the per-channel "oldest new posts first" query of the extraction phase.
+TelegramPostSchema.index({ channel: 1, status: 1, messageId: 1 });
 TelegramPostSchema.index(
   { fetchedAt: 1 },
   { expireAfterSeconds: TELEGRAM_POST_RETENTION_DAYS * 24 * 60 * 60 }
