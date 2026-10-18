@@ -182,6 +182,8 @@ const transformJob = (mock) => {
     applicationLink: `https://${mock.domain}/careers`,
     applicants: mock.applicants,
     postedBy: null,
+    // Seeded jobs are trusted content, so they skip the review queue.
+    reviewStatus: "published",
     createdAt: resolveCreatedAt(mock.posted),
   };
 };

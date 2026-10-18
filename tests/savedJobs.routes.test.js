@@ -33,6 +33,7 @@ const createJob = (overrides = {}) =>
     category: "Design",
     description: "Design things.",
     applicationLink: "https://example.com/apply",
+    reviewStatus: "published",
     ...overrides,
   });
 

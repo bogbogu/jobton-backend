@@ -3,6 +3,7 @@ import Job from "../models/job.model.js";
 import SavedJob from "../models/savedJob.model.js";
 import { formatSalaryDisplay, formatRelativeDate, formatLongDate } from "../utils/format.utils.js";
 import { slugify } from "../utils/slugify.utils.js";
+import { PUBLIC_JOB_FILTER, isPublishedJob } from "../utils/jobVisibility.js";
 
 const DEFAULT_PAGE_SIZE = 12;
 const MAX_PAGE_SIZE = 50;
@@ -16,18 +17,21 @@ const SORT_MAP = {
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// Public shape. Review/ingestion internals (reviewStatus, review, extraction,
+// dedupeKey, source.messageId, source.postedAt) must NEVER appear here; admin
+// code builds its own view on top of this.
 export const serializeJob = (job, { saved = false } = {}) => ({
   id: job._id.toString(),
-  company: job.company,
-  companySlug: slugify(job.company),
+  company: job.company ?? null,
+  companySlug: job.company ? slugify(job.company) : null,
   domain: job.domain,
   logo_url: job.logoUrl || null,
   title: job.title,
-  location: job.location,
-  type: job.employmentType,
+  location: job.location ?? null,
+  type: job.employmentType || null,
   workArrangement: job.workArrangement || null,
   salary: formatSalaryDisplay(job),
-  category: job.category,
+  category: job.category ?? null,
   status: job.status,
   skills: job.skills,
   posted: formatRelativeDate(job.createdAt),
@@ -38,7 +42,12 @@ export const serializeJob = (job, { saved = false } = {}) => ({
   qualification: job.qualification,
   description: job.description,
   responsibilities: job.responsibilities,
-  applicationLink: job.applicationLink,
+  applicationLink: job.applicationLink || null,
+  applyEmail: job.applyEmail || null,
+  applyPhone: job.applyPhone || null,
+  source: job.source?.kind
+    ? { kind: job.source.kind, channel: job.source.channel || null, url: job.source.url || null }
+    : null,
   postedBy: job.postedBy ? job.postedBy.toString() : null,
   saved,
 });
@@ -53,17 +62,26 @@ const getSavedJobIdSet = async (userId, jobIds) => {
   return new Set(savedDocs.map((doc) => doc.job.toString()));
 };
 
+// Express 5 can hand us arrays/objects (?industry=a&industry=b, ?industry[$ne]=x).
+// Only plain non-empty strings are accepted; anything else is ignored.
+const asString = (value) => (typeof value === "string" && value.trim() ? value.trim() : null);
+
 const buildJobFilter = (query) => {
   const conditions = [];
-  const { keyword, location, type, industry, category, company } = query;
+  const keyword = asString(query.keyword);
+  const location = asString(query.location);
+  const type = asString(query.type);
+  const industry = asString(query.industry);
+  const category = asString(query.category);
+  const company = asString(query.company);
 
   if (keyword) {
-    const pattern = new RegExp(escapeRegExp(String(keyword).trim()), "i");
+    const pattern = new RegExp(escapeRegExp(keyword), "i");
     conditions.push({ $or: [{ title: pattern }, { company: pattern }, { skills: pattern }] });
   }
 
   if (location) {
-    conditions.push({ location: new RegExp(escapeRegExp(String(location).trim()), "i") });
+    conditions.push({ location: new RegExp(escapeRegExp(location), "i") });
   }
 
   if (type) {
@@ -85,7 +103,8 @@ const buildJobFilter = (query) => {
     conditions.push({ company });
   }
 
-  return conditions.length ? { $and: conditions } : {};
+  // Allow-list: non-published jobs never reach the public list or its total.
+  return { $and: [PUBLIC_JOB_FILTER, ...conditions] };
 };
 
 const parsePagination = (query) => {
@@ -97,7 +116,11 @@ const parsePagination = (query) => {
 export const getJobs = async (req, res) => {
   try {
     const filter = buildJobFilter(req.query);
-    const sort = SORT_MAP[req.query.sort] || SORT_MAP.MOST_RECENT;
+    const sortKey = asString(req.query.sort);
+    const sort =
+      sortKey && Object.prototype.hasOwnProperty.call(SORT_MAP, sortKey)
+        ? SORT_MAP[sortKey]
+        : SORT_MAP.MOST_RECENT;
     const { page, limit } = parsePagination(req.query);
 
     const [jobs, total] = await Promise.all([
@@ -142,7 +165,8 @@ export const getJobById = async (req, res) => {
 
     const job = await Job.findById(id);
 
-    if (!job) {
+    // Hidden jobs look exactly like missing ones.
+    if (!job || !isPublishedJob(job)) {
       return res.status(404).json({ message: "Job not found." });
     }
 
@@ -161,8 +185,12 @@ export const getJobById = async (req, res) => {
   }
 };
 
+const isMissing = (value) => value === undefined || value === null || value === "";
+
 export const createJob = async (req, res) => {
   try {
+    // Deliberately NOT read from the body: reviewStatus, review, source,
+    // extraction, dedupeKey, applyEmail, applyPhone, postedBy.
     const {
       title,
       company,
@@ -186,12 +214,14 @@ export const createJob = async (req, res) => {
       applicationLink,
     } = req.body || {};
 
+    const isAdmin = req.user.role === "admin";
+
     if (
       !title ||
       !company ||
       !location ||
       !employmentType ||
-      !salaryMin ||
+      isMissing(salaryMin) ||
       !category ||
       !description ||
       !applicationLink
@@ -215,7 +245,8 @@ export const createJob = async (req, res) => {
       salaryCurrency,
       salaryPeriod,
       category,
-      status,
+      // Badges (especially "verified") are admin-only; silently dropped otherwise.
+      status: isAdmin ? status : undefined,
       skills,
       industry,
       experience,
@@ -224,16 +255,17 @@ export const createJob = async (req, res) => {
       responsibilities,
       applicationLink,
       postedBy: req.user._id,
+      reviewStatus: isAdmin ? "published" : "pending_review",
     });
 
     return res.status(201).json({
-      message: "Job created successfully.",
+      message: isAdmin ? "Job created successfully." : "Job submitted for review.",
       job: serializeJob(job),
     });
   } catch (error) {
     console.error(error);
 
-    if (error.name === "ValidationError") {
+    if (error.name === "ValidationError" || error.name === "CastError") {
       return res.status(400).json({ message: error.message });
     }
 
@@ -243,6 +275,8 @@ export const createJob = async (req, res) => {
   }
 };
 
+// reviewStatus, review, source, extraction, dedupeKey, applyEmail, applyPhone
+// and postedBy are never updatable through this endpoint.
 const UPDATABLE_JOB_FIELDS = [
   "title",
   "company",
@@ -256,7 +290,6 @@ const UPDATABLE_JOB_FIELDS = [
   "salaryCurrency",
   "salaryPeriod",
   "category",
-  "status",
   "skills",
   "industry",
   "experience",
@@ -266,14 +299,25 @@ const UPDATABLE_JOB_FIELDS = [
   "applicationLink",
 ];
 
+// Badges: only an admin may change these.
+const ADMIN_ONLY_JOB_FIELDS = ["status"];
+
 export const updateJob = async (req, res) => {
   try {
     const job = req.job;
+    const isAdmin = req.user.role === "admin";
+    const fields = isAdmin ? [...UPDATABLE_JOB_FIELDS, ...ADMIN_ONLY_JOB_FIELDS] : UPDATABLE_JOB_FIELDS;
 
-    for (const field of UPDATABLE_JOB_FIELDS) {
+    for (const field of fields) {
       if (Object.prototype.hasOwnProperty.call(req.body || {}, field)) {
         job[field] = req.body[field];
       }
+    }
+
+    // An owner's edit to a live job must be re-reviewed, otherwise an approved
+    // job could be swapped for a malicious link. Admin edits never change it.
+    if (!isAdmin && isPublishedJob(job)) {
+      job.reviewStatus = "pending_review";
     }
 
     await job.save();
@@ -285,7 +329,7 @@ export const updateJob = async (req, res) => {
   } catch (error) {
     console.error(error);
 
-    if (error.name === "ValidationError") {
+    if (error.name === "ValidationError" || error.name === "CastError") {
       return res.status(400).json({ message: error.message });
     }
 
@@ -321,12 +365,12 @@ export const getSavedJobs = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
-      .populate("job");
+      .populate({ path: "job", match: PUBLIC_JOB_FILTER });
 
     const total = await SavedJob.countDocuments({ user: req.user._id });
 
-    // A saved job whose Job document was since deleted has no `.job` to
-    // populate — skip it rather than serializing a null.
+    // A saved job that was deleted or is no longer public populates to null —
+    // skip it rather than serializing a null.
     const jobs = savedDocs.filter((doc) => doc.job).map((doc) => serializeJob(doc.job, { saved: true }));
 
     return res.status(200).json({
@@ -350,6 +394,11 @@ export const getSavedJobs = async (req, res) => {
 
 export const saveJob = async (req, res) => {
   try {
+    // loadJob lets owners/admins reach their own hidden jobs; nobody saves one.
+    if (!isPublishedJob(req.job)) {
+      return res.status(404).json({ message: "Job not found." });
+    }
+
     await SavedJob.updateOne(
       { user: req.user._id, job: req.job._id },
       { $setOnInsert: { user: req.user._id, job: req.job._id } },
@@ -369,6 +418,7 @@ export const saveJob = async (req, res) => {
   }
 };
 
+// Stays allowed for hidden jobs so users can clean up old saves.
 export const unsaveJob = async (req, res) => {
   try {
     await SavedJob.deleteOne({ user: req.user._id, job: req.job._id });
