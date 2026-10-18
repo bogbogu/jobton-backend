@@ -40,6 +40,11 @@ const validJobPayload = (overrides = {}) => ({
   ...overrides,
 });
 
+// Jobs inserted directly skip the POST review flow, so publish them explicitly
+// (an unset reviewStatus on a NEW job fails closed to pending_review).
+const createPublishedJob = (overrides = {}) =>
+  Job.create({ ...validJobPayload(), reviewStatus: "published", ...overrides });
+
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   const uri = mongoServer.getUri();
@@ -96,7 +101,7 @@ describe("Job routes", () => {
   });
 
   it("filters jobs by company", async () => {
-    const { token } = await createUserWithToken();
+    const { token } = await createUserWithToken({ role: "admin" });
 
     await request(app).post("/api/jobs").set("Authorization", `Bearer ${token}`).send(
       validJobPayload({ title: "Flutterwave Job", company: "Flutterwave" })
@@ -150,8 +155,8 @@ describe("Job routes", () => {
 
     // Full Time + Hybrid — matching the frontend's "Hybrid" filter option
     // even though that's a work arrangement, not an employment type.
-    await Job.create({ ...validJobPayload({ title: "Hybrid Role" }), employmentType: "Full Time", workArrangement: "Hybrid" });
-    await Job.create({ ...validJobPayload({ title: "Fully Remote Role" }), employmentType: "Full Time", workArrangement: "Remote" });
+    await createPublishedJob({ ...validJobPayload({ title: "Hybrid Role" }), employmentType: "Full Time", workArrangement: "Hybrid" });
+    await createPublishedJob({ ...validJobPayload({ title: "Fully Remote Role" }), employmentType: "Full Time", workArrangement: "Remote" });
 
     const response = await request(app).get("/api/jobs").query({ type: "Hybrid" });
 
@@ -163,8 +168,8 @@ describe("Job routes", () => {
     const { token } = await createUserWithToken();
     void token;
 
-    await Job.create({ ...validJobPayload({ title: "Remote Backend Engineer" }), employmentType: "Contract", workArrangement: "Remote" });
-    await Job.create({ ...validJobPayload({ title: "Remote Product Designer" }), employmentType: "Full Time", workArrangement: "Remote" });
+    await createPublishedJob({ ...validJobPayload({ title: "Remote Backend Engineer" }), employmentType: "Contract", workArrangement: "Remote" });
+    await createPublishedJob({ ...validJobPayload({ title: "Remote Product Designer" }), employmentType: "Full Time", workArrangement: "Remote" });
 
     const response = await request(app).get("/api/jobs").query({ keyword: "Backend", type: "Remote" });
 
@@ -173,7 +178,7 @@ describe("Job routes", () => {
   });
 
   it("filters jobs by keyword, type, industry, and category", async () => {
-    const { token } = await createUserWithToken();
+    const { token } = await createUserWithToken({ role: "admin" });
 
     await request(app).post("/api/jobs").set("Authorization", `Bearer ${token}`).send(
       validJobPayload({ title: "Backend Engineer", category: "Engineering", industry: "Fintech", employmentType: "Contract" })
@@ -197,8 +202,8 @@ describe("Job routes", () => {
 
   it("sorts jobs by most applicants", async () => {
     const { token } = await createUserWithToken();
-    const created1 = await Job.create({ ...validJobPayload({ title: "Low Applicants" }) });
-    const created2 = await Job.create({ ...validJobPayload({ title: "High Applicants" }) });
+    const created1 = await createPublishedJob({ ...validJobPayload({ title: "Low Applicants" }) });
+    const created2 = await createPublishedJob({ ...validJobPayload({ title: "High Applicants" }) });
     created2.applicants = 50;
     await created2.save();
     void token;
@@ -222,7 +227,7 @@ describe("Job routes", () => {
     const { token: strangerToken } = await createUserWithToken({ email: "stranger@example.com" });
     const { token: adminToken } = await createUserWithToken({ email: "admin@example.com", role: "admin" });
 
-    const job = await Job.create({ ...validJobPayload(), postedBy: owner._id });
+    const job = await createPublishedJob({ postedBy: owner._id });
 
     const strangerAttempt = await request(app)
       .patch(`/api/jobs/${job._id}`)

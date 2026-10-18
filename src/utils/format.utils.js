@@ -6,15 +6,21 @@ const CURRENCY_SYMBOLS = {
 const numberFormatter = new Intl.NumberFormat("en-US");
 
 export const formatSalaryDisplay = ({ salaryMin, salaryMax, salaryCurrency, salaryPeriod }) => {
+  // Ingested jobs often don't state pay (or the pay period).
+  if (salaryMin === undefined || salaryMin === null) {
+    return "Not specified";
+  }
+
   const symbol = CURRENCY_SYMBOLS[salaryCurrency] || "";
   const min = `${symbol}${numberFormatter.format(salaryMin)}`;
+  const suffix = salaryPeriod ? ` / ${salaryPeriod}` : "";
 
   if (salaryMax && salaryMax > salaryMin) {
     const max = `${symbol}${numberFormatter.format(salaryMax)}`;
-    return `${min} – ${max} / ${salaryPeriod}`;
+    return `${min} – ${max}${suffix}`;
   }
 
-  return `${min} / ${salaryPeriod}`;
+  return `${min}${suffix}`;
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;

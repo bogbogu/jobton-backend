@@ -68,4 +68,14 @@ export const optionalAuth = async (req, res, next) => {
   }
 };
 
+// Must run after `protect` (needs req.user). The role is read from the
+// database on every request by `protect`, never from the JWT.
+export const requireAdmin = (req, res, next) => {
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({ message: "Admin access required." });
+  }
+
+  return next();
+};
+
 export default protect;
