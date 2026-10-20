@@ -354,6 +354,22 @@ Operational notes:
   and `rawPost` come from untrusted text: any admin UI must render them as
   **plain text**, never as HTML.
 
+## API documentation (Swagger)
+
+An interactive OpenAPI 3 description of every endpoint (Swagger UI), so you can browse and call the API from a browser instead of Postman. It is **off by default**.
+
+- Turn it on by setting `API_DOCS_ENABLED=true` (exactly `true`; read once at start-up, so restart after changing it). When it is anything else, `/api-docs` and `/api-docs.json` do not exist and return the normal 404.
+- UI: `/api-docs` (redirects to `/api-docs/`). Raw spec: `/api-docs.json`.
+- Recommended **off on the public live API** (it lists every endpoint, and "Try it out" sends real requests); use it locally or on a private/staging server, or protect it before enabling it publicly.
+- The spec is written by hand in `src/docs/openapi.js`. `tests/api-docs.test.js` fails if a mounted route is missing from it or it documents a route that does not exist, so update it whenever you add or change a route.
+
+To call protected endpoints:
+
+1. Log in: open `POST /api/auth/login`, click **Try it out**, enter email and password, **Execute**.
+2. Copy the `token` from the response.
+3. Click **Authorize** (top right), paste the token (without `Bearer`) and confirm.
+4. **Try it out** on any padlock endpoint; the token is sent automatically (it lasts 7 days by default). Admin endpoints need an account with role `admin`.
+
 ## Known gaps intentionally not built yet
 
 - No Employer/Company account concept — `postedBy` on `Job` and `user` on
