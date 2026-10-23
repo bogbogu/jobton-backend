@@ -83,6 +83,22 @@ const getResendClient = () => {
   return resendClient;
 };
 
+// The Resend SDK does NOT throw when its API rejects a message (unverified
+// sending domain, invalid key, blocked recipient...): it resolves with
+// { data: null, error }. Without this check a rejected email looks like a
+// success and the reason is lost. Turn the error into a thrown Error so the
+// callers' catch blocks log it and report the email as failed.
+const sendOrThrow = async (message) => {
+  const { data, error } = await getResendClient().emails.send(message);
+
+  if (error) {
+    const code = [error.name, error.statusCode].filter(Boolean).join(" ");
+    throw new Error(`Resend rejected the email${code ? ` (${code})` : ""}: ${error.message}`);
+  }
+
+  return data;
+};
+
 export const validateEmailConfig = () => {
   const missingVars = getMissingEmailEnvVars();
   const invalidVars = getInvalidEmailEnvVars();
@@ -102,12 +118,11 @@ export const sendVerificationEmail = async ({
   expiresInMinutes,
 }) => {
   const { fromEmail, defaultToEmail, frontendUrl } = getEmailConfig();
-  const resend = getResendClient();
   const verificationLink = `${frontendUrl.replace(/\/$/, "")}/verify-email?token=${encodeURIComponent(verificationToken)}`;
   const recipient = toEmail || defaultToEmail;
   const bcc = recipient !== defaultToEmail ? [defaultToEmail] : undefined;
 
-  return resend.emails.send({
+  return sendOrThrow({
     from: fromEmail,
     to: [recipient],
     bcc,
@@ -153,12 +168,11 @@ export const sendResetPasswordEmail = async ({
   expiresInMinutes,
 }) => {
   const { fromEmail, defaultToEmail, frontendUrl } = getEmailConfig();
-  const resend = getResendClient();
   const resetLink = `${frontendUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(resetToken)}`;
   const recipient = toEmail || defaultToEmail;
   const bcc = recipient !== defaultToEmail ? [defaultToEmail] : undefined;
 
-  return resend.emails.send({
+  return sendOrThrow({
     from: fromEmail,
     to: [recipient],
     bcc,
