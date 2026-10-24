@@ -430,6 +430,7 @@ const schemas = {
 
   ApproveRequest: {
     type: "object",
+    required: ["expectedUpdatedAt"],
     properties: {
       edits: {
         type: "object",
@@ -450,7 +451,7 @@ const schemas = {
         type: "string",
         format: "date-time",
         description:
-          "The `updatedAt` of the version the admin reviewed. If the job changed since (or the value is not a valid date) the call fails with `409 STALE`.",
+          "REQUIRED. The `updatedAt` of the job version the admin reviewed: send the `updatedAt` from `GET /api/admin/jobs/{id}`. Missing or `null` fails with `400 EXPECTED_UPDATED_AT_REQUIRED`. If the job changed since (or the value is not a valid date) the call fails with `409 STALE`.",
       },
     },
     example: { edits: { category: "Software Development" }, status: ["verified"], expectedUpdatedAt: "2026-03-04T10:15:30.000Z" },
@@ -1369,10 +1370,10 @@ const paths = {
       tag: "Admin - Jobs",
       summary: "Approve and publish a pending job",
       description:
-        "Admin only. Optionally corrects fields (`edits`) and sets badges (`status`) in the same call. To publish, the merged job needs title, description, company, location, category and at least one of applicationLink, applyEmail or applyPhone, otherwise `400 MISSING_FIELDS` (`applyContact` in `missing` stands for the three apply fields); any other schema problem is `400 VALIDATION_ERROR` with a per-field `fields` map. The publish is atomic: it only succeeds if the job is still `pending_review` AND has not changed since it was read, so an owner edit made in between can never be published unseen (`409 STALE`). Send the job's `updatedAt` as `expectedUpdatedAt` to also detect edits made after you opened the review screen.",
+        "Admin only. Optionally corrects fields (`edits`) and sets badges (`status`) in the same call. To publish, the merged job needs title, description, company, location, category and at least one of applicationLink, applyEmail or applyPhone, otherwise `400 MISSING_FIELDS` (`applyContact` in `missing` stands for the three apply fields); any other schema problem is `400 VALIDATION_ERROR` with a per-field `fields` map. The publish is atomic: it only succeeds if the job is still `pending_review` AND has not changed since it was read, so an owner edit made in between can never be published unseen (`409 STALE`). `expectedUpdatedAt` is REQUIRED so an admin can never publish a version they did not look at: send the `updatedAt` from `GET /api/admin/jobs/{id}` (missing or `null` is `400 EXPECTED_UPDATED_AT_REQUIRED`, checked before anything is written); if the job changed after that version, the call is `409 STALE`.",
       access: "bearer",
       parameters: [jobIdParam],
-      body: requestBody(ref("ApproveRequest"), { required: false }),
+      body: requestBody(ref("ApproveRequest")),
       responses: {
         200: ok("Published job.", {
           type: "object",
@@ -1406,6 +1407,13 @@ const paths = {
                 ],
               },
               examples: {
+                expectedUpdatedAtRequired: {
+                  value: {
+                    message:
+                      "expectedUpdatedAt is required: send the updatedAt of the job version you reviewed.",
+                    error: "EXPECTED_UPDATED_AT_REQUIRED",
+                  },
+                },
                 invalidEdits: { value: { message: "edits must be an object.", error: "INVALID_EDITS" } },
                 invalidStatus: {
                   value: {

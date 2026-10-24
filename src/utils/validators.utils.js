@@ -97,6 +97,11 @@ export const isValidEmail = (value) => {
 export const normalizePhone = (raw) => {
   if (typeof raw !== "string") return null;
 
+  // Only digits, an optional +, and ordinary separators (spaces, dots, dashes,
+  // parentheses) are allowed. Anything else (letters such as "ext 12", ";", "x")
+  // rejects the value: stripping it would silently glue digits into a different number.
+  if (raw.length > 40 || !/^[+\d \t().-]+$/.test(raw)) return null;
+
   const hasPlus = raw.trim().startsWith("+");
   const digits = raw.replace(/\D/g, "");
 
