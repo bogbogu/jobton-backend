@@ -55,6 +55,9 @@ const ingestedJobData = (overrides = {}) => ({
 
 const createJob = (data) => Job.create(data);
 
+// The version an admin "looked at": approve requires it as expectedUpdatedAt.
+const versionOf = async (job) => (await Job.findById(job._id)).updatedAt.toISOString();
+
 const FAKE_ID = "64b7f0f0f0f0f0f0f0f0f0f0";
 
 beforeAll(async () => {
@@ -270,7 +273,7 @@ describe("POST /api/admin/jobs/:id/approve", () => {
     const response = await request(app)
       .post(`/api/admin/jobs/${job.id}/approve`)
       .set(auth(token))
-      .send({});
+      .send({ expectedUpdatedAt: await versionOf(job) });
 
     expect(response.status).toBe(200);
     expect(response.body.job.reviewStatus).toBe("published");
@@ -289,6 +292,7 @@ describe("POST /api/admin/jobs/:id/approve", () => {
       .post(`/api/admin/jobs/${job.id}/approve`)
       .set(auth(token))
       .send({
+        expectedUpdatedAt: await versionOf(job),
         edits: {
           company: "Acme Ltd",
           location: "Abuja",
@@ -320,7 +324,7 @@ describe("POST /api/admin/jobs/:id/approve", () => {
     const response = await request(app)
       .post(`/api/admin/jobs/${job.id}/approve`)
       .set(auth(token))
-      .send({ edits: { location: "Abuja" } });
+      .send({ expectedUpdatedAt: await versionOf(job), edits: { location: "Abuja" } });
 
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("MISSING_FIELDS");
@@ -339,7 +343,7 @@ describe("POST /api/admin/jobs/:id/approve", () => {
     const response = await request(app)
       .post(`/api/admin/jobs/${job.id}/approve`)
       .set(auth(token))
-      .send({});
+      .send({ expectedUpdatedAt: await versionOf(job) });
 
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("MISSING_FIELDS");
@@ -360,9 +364,10 @@ describe("POST /api/admin/jobs/:id/approve", () => {
       const response = await request(app)
         .post(`/api/admin/jobs/${job.id}/approve`)
         .set(auth(token))
-        .send({ edits });
+        .send({ expectedUpdatedAt: await versionOf(job), edits });
 
       expect(response.status).toBe(400);
+      expect(response.body.error).not.toBe("EXPECTED_UPDATED_AT_REQUIRED");
     }
 
     expect((await Job.findById(job._id)).reviewStatus).toBe("pending_review");
@@ -377,6 +382,7 @@ describe("POST /api/admin/jobs/:id/approve", () => {
       .post(`/api/admin/jobs/${job.id}/approve`)
       .set(auth(token))
       .send({
+        expectedUpdatedAt: await versionOf(job),
         edits: {
           title: "Edited Title",
           reviewStatus: "rejected",
@@ -411,19 +417,24 @@ describe("POST /api/admin/jobs/:id/approve", () => {
     const invalid = await request(app)
       .post(`/api/admin/jobs/${job.id}/approve`)
       .set(auth(token))
-      .send({ status: ["superstar"] });
+      .send({ expectedUpdatedAt: await versionOf(job), status: ["superstar"] });
     expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toBe("INVALID_STATUS");
 
     const notArray = await request(app)
       .post(`/api/admin/jobs/${job.id}/approve`)
       .set(auth(token))
-      .send({ status: "verified" });
+      .send({ expectedUpdatedAt: await versionOf(job), status: "verified" });
     expect(notArray.status).toBe(400);
+    expect(notArray.body.error).toBe("INVALID_STATUS");
 
     const response = await request(app)
       .post(`/api/admin/jobs/${job.id}/approve`)
       .set(auth(token))
-      .send({ status: ["verified", "verified", "urgent"] });
+      .send({
+        expectedUpdatedAt: await versionOf(job),
+        status: ["verified", "verified", "urgent"],
+      });
     expect(response.status).toBe(200);
     expect(response.body.job.status).toEqual(["verified", "urgent"]);
   });
@@ -436,13 +447,13 @@ describe("POST /api/admin/jobs/:id/approve", () => {
     const first = await request(app)
       .post(`/api/admin/jobs/${approved.id}/approve`)
       .set(auth(token))
-      .send({});
+      .send({ expectedUpdatedAt: await versionOf(approved) });
     expect(first.status).toBe(200);
 
     const second = await request(app)
       .post(`/api/admin/jobs/${approved.id}/approve`)
       .set(auth(token))
-      .send({});
+      .send({ expectedUpdatedAt: await versionOf(approved) });
     expect(second.status).toBe(409);
     expect(second.body.error).toBe("NOT_PENDING");
 
@@ -450,7 +461,7 @@ describe("POST /api/admin/jobs/:id/approve", () => {
     const afterReject = await request(app)
       .post(`/api/admin/jobs/${rejected.id}/approve`)
       .set(auth(token))
-      .send({});
+      .send({ expectedUpdatedAt: await versionOf(rejected) });
     expect(afterReject.status).toBe(409);
     expect(afterReject.body.error).toBe("NOT_PENDING");
     expect((await Job.findById(rejected._id)).reviewStatus).toBe("rejected");
@@ -460,9 +471,11 @@ describe("POST /api/admin/jobs/:id/approve", () => {
     const { token } = await createAdmin();
     const job = await createJob(completeJobData());
 
+    const body = { expectedUpdatedAt: await versionOf(job) };
+
     const results = await Promise.all([
-      request(app).post(`/api/admin/jobs/${job.id}/approve`).set(auth(token)).send({}),
-      request(app).post(`/api/admin/jobs/${job.id}/approve`).set(auth(token)).send({}),
+      request(app).post(`/api/admin/jobs/${job.id}/approve`).set(auth(token)).send(body),
+      request(app).post(`/api/admin/jobs/${job.id}/approve`).set(auth(token)).send(body),
     ]);
 
     expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
@@ -471,19 +484,86 @@ describe("POST /api/admin/jobs/:id/approve", () => {
   it("returns 404 for an invalid or unknown id and 400 for a malformed edits body", async () => {
     const { token } = await createAdmin();
 
+    const expectedUpdatedAt = new Date().toISOString();
+
+    // An invalid id is a 404 even without the required expectedUpdatedAt.
     expect(
       (await request(app).post("/api/admin/jobs/nope/approve").set(auth(token)).send({})).status
     ).toBe(404);
     expect(
-      (await request(app).post(`/api/admin/jobs/${FAKE_ID}/approve`).set(auth(token)).send({})).status
+      (
+        await request(app)
+          .post(`/api/admin/jobs/${FAKE_ID}/approve`)
+          .set(auth(token))
+          .send({ expectedUpdatedAt })
+      ).status
     ).toBe(404);
 
     const job = await createJob(completeJobData());
     const response = await request(app)
       .post(`/api/admin/jobs/${job.id}/approve`)
       .set(auth(token))
-      .send({ edits: ["company"] });
+      .send({ expectedUpdatedAt: await versionOf(job), edits: ["company"] });
     expect(response.status).toBe(400);
+    expect(response.body.error).toBe("INVALID_EDITS");
+  });
+
+  it("requires expectedUpdatedAt: 400 EXPECTED_UPDATED_AT_REQUIRED when missing or null, job untouched", async () => {
+    const { token } = await createAdmin();
+    const job = await createJob(completeJobData());
+
+    for (const body of [{}, { expectedUpdatedAt: null }, { edits: { category: "Design" } }]) {
+      const response = await request(app)
+        .post(`/api/admin/jobs/${job.id}/approve`)
+        .set(auth(token))
+        .send(body);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe("EXPECTED_UPDATED_AT_REQUIRED");
+    }
+
+    // No body at all behaves the same.
+    const noBody = await request(app).post(`/api/admin/jobs/${job.id}/approve`).set(auth(token));
+    expect(noBody.status).toBe(400);
+    expect(noBody.body.error).toBe("EXPECTED_UPDATED_AT_REQUIRED");
+
+    const stored = await Job.findById(job._id);
+    expect(stored.reviewStatus).toBe("pending_review");
+    expect(stored.review?.reviewedBy ?? null).toBeNull();
+  });
+
+  it("publishes with the current expectedUpdatedAt and returns 409 STALE for an old one", async () => {
+    const { token } = await createAdmin();
+    const job = await createJob(completeJobData());
+    const reviewed = await versionOf(job);
+
+    // An owner edit lands after the admin opened the job.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await Job.findOneAndUpdate({ _id: job._id }, { $set: { title: "Edited by owner" } });
+    expect(await versionOf(job)).not.toBe(reviewed);
+
+    const stale = await request(app)
+      .post(`/api/admin/jobs/${job.id}/approve`)
+      .set(auth(token))
+      .send({ expectedUpdatedAt: reviewed });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toBe("STALE");
+    expect((await Job.findById(job._id)).reviewStatus).toBe("pending_review");
+
+    const unparseable = await request(app)
+      .post(`/api/admin/jobs/${job.id}/approve`)
+      .set(auth(token))
+      .send({ expectedUpdatedAt: "not-a-date" });
+    expect(unparseable.status).toBe(409);
+    expect(unparseable.body.error).toBe("STALE");
+
+    const fresh = await request(app)
+      .post(`/api/admin/jobs/${job.id}/approve`)
+      .set(auth(token))
+      .send({ expectedUpdatedAt: await versionOf(job) });
+    expect(fresh.status).toBe(200);
+    expect(fresh.body.job.reviewStatus).toBe("published");
+    expect(fresh.body.job.title).toBe("Edited by owner");
   });
 });
 
@@ -630,7 +710,7 @@ describe("Verified badge", () => {
       const approved = await request(app)
         .post(`/api/admin/jobs/${stored.id}/approve`)
         .set(auth(adminToken))
-        .send({ status: ["verified"] });
+        .send({ expectedUpdatedAt: await versionOf(stored), status: ["verified"] });
       expect(approved.status).toBe(200);
       expect((await Job.findById(stored._id)).status).toContain("verified");
     }

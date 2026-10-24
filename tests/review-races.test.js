@@ -114,7 +114,9 @@ describe("review-gate races", () => {
     const response = await request(app)
       .post(`/api/admin/jobs/${job._id}/approve`)
       .set(auth(adminToken))
-      .send({});
+      // The admin reviewed the job's current version, so the version check
+      // passes; only the atomic write detects the edit that raced in after it.
+      .send({ expectedUpdatedAt: (await Job.findById(job._id)).updatedAt.toISOString() });
 
     expect(response.status).toBe(409);
     expect(response.body.error).toBe("STALE");
@@ -138,6 +140,22 @@ describe("review-gate races", () => {
       .send({ expectedUpdatedAt: job.updatedAt.toISOString() });
     expect(ok.status).toBe(200);
     expect(ok.body.job.reviewStatus).toBe("published");
+  });
+
+  it("approve without expectedUpdatedAt is refused before any write", async () => {
+    const { token: adminToken } = await createUserWithToken({ role: "admin", email: "admin@example.com" });
+    const job = await Job.create(jobData({ reviewStatus: "pending_review" }));
+    const writeSpy = vi.spyOn(Job, "findOneAndUpdate");
+
+    const response = await request(app)
+      .post(`/api/admin/jobs/${job._id}/approve`)
+      .set(auth(adminToken))
+      .send({});
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("EXPECTED_UPDATED_AT_REQUIRED");
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect((await Job.collection.findOne({ _id: job._id })).reviewStatus).toBe("pending_review");
   });
 });
 
