@@ -14,6 +14,8 @@ import jobRoutes from "./src/routes/job.route.js";
 import freelancerRoutes from "./src/routes/freelancer.routes.js";
 import companyRoutes from "./src/routes/company.routes.js";
 import newsletterRoutes from "./src/routes/newsletter.routes.js";
+import adminRoutes from "./src/routes/admin.routes.js";
+import docsRoutes from "./src/routes/docs.routes.js";
 import { validateEmailConfig } from "./src/utils/email.service.js";
 
 const port = process.env.PORT || 3000;
@@ -79,6 +81,14 @@ app.use("/api/jobs", jobRoutes);
 app.use("/api/freelancers", freelancerRoutes);
 app.use("/api/companies", companyRoutes);
 app.use("/api/newsletter", newsletterRoutes);
+app.use("/api/admin", adminRoutes);
+
+// Swagger UI (/api-docs) and the raw spec (/api-docs.json). Off unless explicitly
+// enabled: the docs list every endpoint, so they are not exposed by default.
+// Read once at start-up; when disabled the routes are never registered.
+if (process.env.API_DOCS_ENABLED === "true") {
+    app.use(docsRoutes);
+}
 
 app.get('/', (req, res) => {
     try {

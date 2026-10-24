@@ -1,5 +1,12 @@
 import mongoose from "mongoose";
 import { slugify } from "../utils/slugify.utils.js";
+import { isSafeHttpUrl, isValidDomain } from "../utils/validators.utils.js";
+
+// Rendered as <a href>/<img src> by the frontend: http(s) only. Empty = unset.
+const urlValidator = {
+  validator: (value) => value === undefined || value === null || value === "" || isSafeHttpUrl(value),
+  message: "{PATH} must be an http(s) URL.",
+};
 
 const CompanySchema = new mongoose.Schema(
   {
@@ -23,11 +30,16 @@ const CompanySchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: "",
+      validate: {
+        validator: isValidDomain,
+        message: "domain must be a plain hostname, e.g. example.com.",
+      },
     },
 
     logoUrl: {
       type: String,
       default: "",
+      validate: urlValidator,
     },
 
     description: {
@@ -40,6 +52,7 @@ const CompanySchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: "",
+      validate: urlValidator,
     },
 
     industry: {

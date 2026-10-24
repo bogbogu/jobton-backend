@@ -5,6 +5,13 @@ export default defineConfig({
     environment: "node",
     include: ["tests/**/*.test.js"],
     setupFiles: ["tests/setup.js"],
+    // Every test file starts its own in-memory mongod; under parallel load the
+    // default 10s hook timeout is not enough.
+    hookTimeout: 60000,
+    testTimeout: 30000,
+    // Each test file starts its own in-memory MongoDB. Starting 20+ at once overloads
+    // an ordinary machine and makes suites time out at start-up, so cap the parallelism.
+    maxWorkers: 4,
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],
