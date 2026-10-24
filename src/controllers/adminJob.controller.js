@@ -260,8 +260,17 @@ export const approveJob = async (req, res) => {
     // Version check: the review UI sends the updatedAt of the version the admin
     // actually looked at, so an owner edit made in the meantime cannot be
     // approved unseen.
-    const expected = new Date(body.expectedUpdatedAt);
-    if (Number.isNaN(expected.getTime()) || expected.getTime() !== current.updatedAt.getTime()) {
+    // Only a string or a number can be a timestamp. Anything else (an object with a
+    // custom toString, an array, a boolean) would be coerced by `new Date()` or throw,
+    // so it is treated as a stale version instead of reaching the Date constructor.
+    const rawVersion = body.expectedUpdatedAt;
+    const expected = typeof rawVersion === "string" || typeof rawVersion === "number" ? new Date(rawVersion) : null;
+    if (
+      !expected ||
+      Number.isNaN(expected.getTime()) ||
+      !current.updatedAt ||
+      expected.getTime() !== current.updatedAt.getTime()
+    ) {
       return res.status(409).json({
         message: "This job changed after you opened it. Reload it and review again.",
         error: "STALE",
