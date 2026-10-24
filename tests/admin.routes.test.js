@@ -565,6 +565,31 @@ describe("POST /api/admin/jobs/:id/approve", () => {
     expect(fresh.body.job.reviewStatus).toBe("published");
     expect(fresh.body.job.title).toBe("Edited by owner");
   });
+
+  it("treats a non-string, non-number expectedUpdatedAt as STALE instead of failing with a 500", async () => {
+    const { token } = await createAdmin();
+    const job = await createJob(completeJobData());
+    const real = await versionOf(job);
+
+    const hostile = [
+      { toString: 1 }, // new Date() would throw on this and surface as a 500
+      { valueOf: 1 },
+      [real], // an array holding the exact value must not be coerced into a match
+      true,
+      false,
+    ];
+
+    for (const value of hostile) {
+      const response = await request(app)
+        .post(`/api/admin/jobs/${job.id}/approve`)
+        .set(auth(token))
+        .send({ expectedUpdatedAt: value });
+      expect(response.status, JSON.stringify(value)).toBe(409);
+      expect(response.body.error).toBe("STALE");
+    }
+
+    expect((await Job.findById(job._id)).reviewStatus).toBe("pending_review");
+  });
 });
 
 describe("POST /api/admin/jobs/:id/reject", () => {
