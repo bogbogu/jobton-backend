@@ -234,6 +234,16 @@ export const approveJob = async (req, res) => {
       badges = [...new Set(body.status)];
     }
 
+    // Required: an admin can never publish a version they did not look at.
+    // Checked before any database access.
+    if (body.expectedUpdatedAt === undefined || body.expectedUpdatedAt === null) {
+      return res.status(400).json({
+        message:
+          "expectedUpdatedAt is required: send the updatedAt of the job version you reviewed.",
+        error: "EXPECTED_UPDATED_AT_REQUIRED",
+      });
+    }
+
     const current = await Job.findById(id);
 
     if (!current) {
@@ -247,17 +257,15 @@ export const approveJob = async (req, res) => {
       });
     }
 
-    // Optional version check: the review UI sends the updatedAt of the version
-    // the admin actually looked at, so an owner edit made in the meantime
-    // cannot be approved unseen.
-    if (body.expectedUpdatedAt !== undefined) {
-      const expected = new Date(body.expectedUpdatedAt);
-      if (Number.isNaN(expected.getTime()) || expected.getTime() !== current.updatedAt.getTime()) {
-        return res.status(409).json({
-          message: "This job changed after you opened it. Reload it and review again.",
-          error: "STALE",
-        });
-      }
+    // Version check: the review UI sends the updatedAt of the version the admin
+    // actually looked at, so an owner edit made in the meantime cannot be
+    // approved unseen.
+    const expected = new Date(body.expectedUpdatedAt);
+    if (Number.isNaN(expected.getTime()) || expected.getTime() !== current.updatedAt.getTime()) {
+      return res.status(409).json({
+        message: "This job changed after you opened it. Reload it and review again.",
+        error: "STALE",
+      });
     }
 
     const appliedEdits = {};
