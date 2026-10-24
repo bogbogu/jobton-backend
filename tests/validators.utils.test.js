@@ -12,6 +12,8 @@ const timed = (fn) => {
   return { result, ms: performance.now() - start };
 };
 
+import { normalizePhone as normalizePhoneStrict } from "../src/utils/validators.utils.js";
+
 describe("cleanText", () => {
   it("strips tags and control/invisible characters", () => {
     expect(cleanText("<b>Senior</b> Accountant\u200b\u202e")).toBe("Senior Accountant");
@@ -149,5 +151,34 @@ describe("classifyLink", () => {
     expect(classifyLink("https://bit.ly/x", "Acme")).toBe("social_or_short");
     expect(classifyLink(undefined, "Acme")).toBe("none");
     expect(classifyLink("https:evil.com", "Acme")).toBe("none");
+  });
+});
+
+describe("normalizePhone is strict about what it accepts", () => {
+  it("normalizes ordinary Nigerian and international formats", () => {
+    expect(normalizePhoneStrict("08012345678")).toBe("+2348012345678");
+    expect(normalizePhoneStrict("(0801) 234-5678")).toBe("+2348012345678");
+    expect(normalizePhoneStrict("+234 801 234 5678")).toBe("+2348012345678");
+    expect(normalizePhoneStrict("2348012345678")).toBe("+2348012345678");
+  });
+
+  it("rejects letters and symbols instead of deleting them and gluing digits together", () => {
+    expect(normalizePhoneStrict("+234 801 234 5678 ext 12")).toBeNull();
+    expect(normalizePhoneStrict("8012345;ext=1")).toBeNull();
+    expect(normalizePhoneStrict("Call 0801 234 5678 or 0902 345 6789")).toBeNull();
+    expect(normalizePhoneStrict("tel:+2348012345678")).toBeNull();
+  });
+
+  it("rejects two numbers on separate lines rather than merging them", () => {
+    expect(normalizePhoneStrict("1234567" + String.fromCharCode(10) + "7654321")).toBeNull();
+    expect(normalizePhoneStrict("1234567" + String.fromCharCode(13, 10) + "7654321")).toBeNull();
+  });
+
+  it("rejects too short, too long and non-string values", () => {
+    expect(normalizePhoneStrict("12")).toBeNull();
+    expect(normalizePhoneStrict("1".repeat(16))).toBeNull();
+    expect(normalizePhoneStrict("1".repeat(60))).toBeNull();
+    expect(normalizePhoneStrict(null)).toBeNull();
+    expect(normalizePhoneStrict(8012345678)).toBeNull();
   });
 });
