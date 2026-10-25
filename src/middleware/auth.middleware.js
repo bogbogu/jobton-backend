@@ -1,6 +1,9 @@
 import jwt from "jsonwebtoken";
 import User from "../models/user.model.js";
 
+// Pin the algorithm: never let the token's own header choose how it is verified.
+const JWT_VERIFY_OPTIONS = { algorithms: ["HS256"] };
+
 const protect = async (req, res, next) => {
   try {
     let token;
@@ -13,7 +16,7 @@ const protect = async (req, res, next) => {
       token = req.headers.authorization.split(" ")[1];
 
       // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, process.env.JWT_SECRET, JWT_VERIFY_OPTIONS);
 
       // Find user (password is excluded because of select: false)
       const user = await User.findById(decoded.id);
@@ -47,6 +50,8 @@ const protect = async (req, res, next) => {
 // which jobs they've saved) without requiring it. A missing or invalid
 // token is silently treated as "anonymous," not an error.
 export const optionalAuth = async (req, res, next) => {
+  // The response can differ per caller (saved flags), so shared caches must key on the token.
+  res.vary("Authorization");
   try {
     const header = req.headers.authorization;
 
@@ -55,7 +60,7 @@ export const optionalAuth = async (req, res, next) => {
     }
 
     const token = header.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, JWT_VERIFY_OPTIONS);
     const user = await User.findById(decoded.id);
 
     if (user) {

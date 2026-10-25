@@ -1,4 +1,5 @@
 import Company from "../models/company.model.js";
+import { isInputError, validationErrorBody } from "../utils/errors.utils.js";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -25,11 +26,12 @@ const parsePagination = (query) => {
 
 export const getCompanies = async (req, res) => {
   try {
-    const { keyword } = req.query;
+    // Query values can be arrays (?keyword=a&keyword=b); only a plain string is used.
+    const keyword = typeof req.query.keyword === "string" ? req.query.keyword.trim() : "";
     const filter = {};
 
     if (keyword) {
-      filter.name = new RegExp(escapeRegExp(String(keyword).trim()), "i");
+      filter.name = new RegExp(escapeRegExp(keyword), "i");
     }
 
     const { page, limit } = parsePagination(req.query);
@@ -98,8 +100,8 @@ export const createCompany = async (req, res) => {
       return res.status(409).json({ message: "A company with this name already exists." });
     }
 
-    if (error.name === "ValidationError") {
-      return res.status(400).json({ message: error.message });
+    if (isInputError(error)) {
+      return res.status(400).json(validationErrorBody(error));
     }
 
     return res.status(500).json({
@@ -133,8 +135,8 @@ export const updateCompany = async (req, res) => {
       return res.status(409).json({ message: "A company with this name already exists." });
     }
 
-    if (error.name === "ValidationError") {
-      return res.status(400).json({ message: error.message });
+    if (isInputError(error)) {
+      return res.status(400).json(validationErrorBody(error));
     }
 
     return res.status(500).json({

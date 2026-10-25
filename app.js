@@ -16,9 +16,15 @@ import companyRoutes from "./src/routes/company.routes.js";
 import newsletterRoutes from "./src/routes/newsletter.routes.js";
 import adminRoutes from "./src/routes/admin.routes.js";
 import docsRoutes from "./src/routes/docs.routes.js";
+import noStore from "./src/middleware/cacheControl.middleware.js";
+import { notFoundHandler, errorHandler } from "./src/middleware/error.middleware.js";
 import { validateEmailConfig } from "./src/utils/email.service.js";
 
 const port = process.env.PORT || 3000;
+
+// Request bodies here are small JSON documents (the largest field is a 10,000
+// character job description). Anything bigger is rejected with 413.
+const BODY_LIMIT = "100kb";
 
 // Allow-list of trusted frontend origins. CORS_ALLOWED_ORIGINS supports a
 // comma-separated list (e.g. local dev + deployed frontend); if it's unset,
@@ -32,6 +38,10 @@ const allowedOrigins = String(process.env.CORS_ALLOWED_ORIGINS || process.env.FR
     .split(",")
     .map((origin) => origin.trim().replace(/\/+$/, ""))
     .filter(Boolean);
+
+// Do not advertise the framework. (Helmet also removes this header; the explicit
+// call keeps it off even if helmet is reconfigured or removed.)
+app.disable("x-powered-by");
 
 // middleware
 app.use(helmet());
@@ -50,8 +60,11 @@ app.use(cors({
     },
     credentials: true,
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json({ limit: BODY_LIMIT }));
+app.use(express.urlencoded({ extended: false, limit: BODY_LIMIT }));
+
+// Account, session and contact data: never cached by browsers or proxies.
+app.use(["/api/auth", "/api/freelancers", "/api/admin"], noStore);
 
 const emailConfigValidation = validateEmailConfig();
 
@@ -67,6 +80,16 @@ if (!emailConfigValidation.isValid) {
 }
 
 export const startServer = async () => {
+    // Checked here, not at import time, so tests and tooling can import the app
+    // without a secret. Without it every token would be signed with "undefined".
+    if (!process.env.JWT_SECRET || !process.env.JWT_SECRET.trim()) {
+        throw new Error("JWT_SECRET is not set. Refusing to start.");
+    }
+
+    if (process.env.JWT_SECRET.length < 32) {
+        console.warn("JWT_SECRET is shorter than 32 characters. Rotate it to a long random value.");
+    }
+
     await connectDB();
 
     app.listen(port, () => {
@@ -90,19 +113,20 @@ if (process.env.API_DOCS_ENABLED === "true") {
     app.use(docsRoutes);
 }
 
-app.get('/', (req, res) => {
-    try {
-        res.status(200).send('Hello from the API server')
-        console.log('API is running')
-    } catch (error) {
-        res.status(500).json({ message: error.message })
-    }
-})
+// Liveness check.
+app.get("/", (req, res) => res.status(200).json({ message: "API is running." }));
+
+// Must stay last: unmatched routes, then every error from the middleware above.
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 const currentFilePath = fileURLToPath(import.meta.url);
 
 if (process.argv[1] === currentFilePath) {
-    startServer();
+    startServer().catch((error) => {
+        console.error("Failed to start server:", error.message);
+        process.exit(1);
+    });
 }
 
 export default app;

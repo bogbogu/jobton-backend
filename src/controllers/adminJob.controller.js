@@ -4,6 +4,7 @@ import TelegramPost from "../models/telegramPost.model.js";
 import { serializeJob } from "./job.controller.js";
 import { publicJobFilter, REVIEW_STATUSES } from "../utils/jobVisibility.js";
 import { cleanText } from "../utils/validators.utils.js";
+import { toFieldErrors } from "../utils/errors.utils.js";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -57,11 +58,6 @@ const audit = (action, adminId, jobId, extra = "") => {
   );
 };
 
-const validationFields = (error) =>
-  Object.fromEntries(
-    Object.entries(error.errors || {}).map(([path, detail]) => [path, detail.message])
-  );
-
 export const serializeAdminJob = (job) => {
   const plain = typeof job.toObject === "function" ? job.toObject() : job;
   const review = plain.review || {};
@@ -70,6 +66,8 @@ export const serializeAdminJob = (job) => {
 
   return {
     ...serializeJob(job),
+    // Admin-only: the public serializer never exposes the poster's user id.
+    postedBy: idToString(plain.postedBy),
     // Raw values the review form needs to pre-fill.
     employmentType: plain.employmentType,
     salaryMin: plain.salaryMin ?? null,
@@ -318,7 +316,7 @@ export const approveJob = async (req, res) => {
       return res.status(400).json({
         message: "Validation failed.",
         error: "VALIDATION_ERROR",
-        fields: validationFields(validationError),
+        fields: toFieldErrors(validationError),
       });
     }
 

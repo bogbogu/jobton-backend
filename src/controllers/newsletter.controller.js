@@ -5,7 +5,7 @@ export const subscribeNewsletter = async (req, res) => {
   try {
     const { email } = req.body || {};
 
-    if (!email || !validator.isEmail(String(email))) {
+    if (typeof email !== "string" || !validator.isEmail(email)) {
       return res.status(400).json({
         message: "Please provide a valid email address.",
       });

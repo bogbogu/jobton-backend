@@ -10,13 +10,14 @@ import {
   unsaveJob,
 } from "../controllers/job.controller.js";
 import protect, { optionalAuth } from "../middleware/auth.middleware.js";
+import noStore from "../middleware/cacheControl.middleware.js";
 import { loadJob, loadJobForUnsave, requireJobOwner } from "../middleware/job.middleware.js";
 
 const router = express.Router();
 
 // Must come before GET /:id — otherwise Express matches "saved" as the :id
 // param and this route is never reached.
-router.get("/saved", protect, getSavedJobs);
+router.get("/saved", noStore, protect, getSavedJobs);
 
 router.get("/", optionalAuth, getJobs);
 router.get("/:id", optionalAuth, getJobById);

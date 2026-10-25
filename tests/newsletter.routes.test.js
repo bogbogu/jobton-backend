@@ -39,6 +39,12 @@ describe("Newsletter routes", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects a non-string email such as an array", async () => {
+    const response = await request(app).post("/api/newsletter/subscribe").send({ email: ["reader@example.com"] });
+
+    expect(response.status).toBe(400);
+  });
+
   it("is idempotent for an already-subscribed email", async () => {
     await NewsletterSubscriber.create({ email: "reader@example.com" });
 
