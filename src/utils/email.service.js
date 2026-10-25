@@ -143,7 +143,7 @@ export const sendVerificationEmail = async ({
     To get started, please verify your email address using the button below or enter the verification code provided in this email. This helps us keep Jobton secure and ensures your account is protected.
   </p>
   <p style="margin: 24px 0;">
-    <a href="${verificationLink}" style="display: inline-block; padding: 12px 18px; background-color: #0f766e; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 600;">Verify Email</a>
+    <a href="${verificationLink}" style="display: inline-block; padding: 12px 18px; background-color: #2563eb; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 600;">Verify Email</a>
   </p>
   <p>
     Verification code: <strong style="font-size: 18px; letter-spacing: 2px;">${verificationCode}</strong>
@@ -185,7 +185,7 @@ export const sendResetPasswordEmail = async ({
     We received a request to reset your Jobton password.
   </p>
   <p style="margin: 24px 0;">
-    <a href="${resetLink}" style="display: inline-block; padding: 12px 18px; background-color: #0f766e; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 600;">Reset Password</a>
+    <a href="${resetLink}" style="display: inline-block; padding: 12px 18px; background-color: #2563eb; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 600;">Reset Password</a>
   </p>
   <p>
     This link expires in ${expiresInMinutes} minutes.
