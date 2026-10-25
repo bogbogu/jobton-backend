@@ -14,9 +14,22 @@ import {
   PASSWORD_RESET_EXPIRES_MINUTES,
   validatePasswordPolicy,
 } from "../utils/authToken.utils.js";
+import { serializeUser } from "../utils/user.utils.js";
+import { isDuplicateKeyError, isInputError, validationErrorBody } from "../utils/errors.utils.js";
 
 const FORGOT_PASSWORD_RESPONSE_MESSAGE =
   "If that email exists, password reset instructions have been sent.";
+
+// Credentials and tokens must be plain strings. A JSON body can carry objects
+// ({"email": {"$ne": null}}) or arrays; those are rejected here, before they
+// can reach a query, a hash function or a Mongoose cast.
+const areStrings = (...values) => values.every((value) => typeof value === "string");
+
+const invalidInput = (res) =>
+  res.status(400).json({
+    message: "Invalid request payload.",
+    error: "INVALID_INPUT",
+  });
 
 export const registerUser = async (req, res) => {
     try {
@@ -26,6 +39,10 @@ export const registerUser = async (req, res) => {
             return res.status(400).json({
                 message: "Please fill in all required fields.",
             });
+        }
+
+        if (!areStrings(firstName, lastName, email, password)) {
+            return invalidInput(res);
         }
 
         const passwordValidation = validatePasswordPolicy(password);
@@ -81,17 +98,21 @@ export const registerUser = async (req, res) => {
               ? "User registered successfully. Please verify your email."
               : "User registered successfully, but verification email could not be sent.",
           emailStatus,
-            user: {
-                id: user._id,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                email: user.email,
-                role: user.role,
-                isVerified: user.isVerified,
-            },
+            user: serializeUser(user),
         });
 
     } catch (error) {
+      // Same answer as the pre-check above, for a concurrent duplicate sign-up.
+      if (isDuplicateKeyError(error)) {
+        return res.status(400).json({
+          message: "Email already exists.",
+        });
+      }
+
+      if (isInputError(error)) {
+        return res.status(400).json(validationErrorBody(error));
+      }
+
       console.error(error);
 
         return res.status(500).json({
@@ -110,6 +131,10 @@ export const loginUser = async (req, res) => {
       return res.status(400).json({
         message: "Please provide email and password.",
       });
+    }
+
+    if (!areStrings(email, password)) {
+      return invalidInput(res);
     }
 
     // Find user
@@ -147,14 +172,7 @@ export const loginUser = async (req, res) => {
     return res.status(200).json({
       message: "Login successful.",
       token,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        role: user.role,
-        isVerified: user.isVerified,
-      },
+      user: serializeUser(user),
     });
 
   } catch (error) {
@@ -167,7 +185,8 @@ export const loginUser = async (req, res) => {
 };
 
 export const getCurrentUser = async (req, res) => {
-  return res.status(200).json(req.user);
+  // Allow-list, never the raw document.
+  return res.status(200).json(serializeUser(req.user));
 };
 
 export const verifyEmail = async (req, res) => {
@@ -180,6 +199,10 @@ export const verifyEmail = async (req, res) => {
       return res.status(400).json({
         message: "Provide either verification token or email and verification code.",
       });
+    }
+
+    if (hasToken ? !areStrings(token) : !areStrings(email, code)) {
+      return invalidInput(res);
     }
 
     let user = null;
@@ -252,6 +275,10 @@ export const resendVerificationEmail = async (req, res) => {
       });
     }
 
+    if (!areStrings(email)) {
+      return invalidInput(res);
+    }
+
     const user = await User.findOne({
       email: String(email).toLowerCase().trim(),
     }).select("+emailVerificationToken +emailVerificationCode +emailVerificationExpiresAt");
@@ -309,6 +336,10 @@ export const forgotPassword = async (req, res) => {
       });
     }
 
+    if (!areStrings(email)) {
+      return invalidInput(res);
+    }
+
     const normalizedEmail = String(email).toLowerCase().trim();
 
     const user = await User.findOne({ email: normalizedEmail }).select(
@@ -358,6 +389,10 @@ export const resetPassword = async (req, res) => {
       return res.status(400).json({
         message: "Token and password are required.",
       });
+    }
+
+    if (!areStrings(token, password)) {
+      return invalidInput(res);
     }
 
     const passwordValidation = validatePasswordPolicy(password);

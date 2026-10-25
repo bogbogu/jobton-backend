@@ -4,6 +4,7 @@ import SavedJob from "../models/savedJob.model.js";
 import { formatSalaryDisplay, formatRelativeDate, formatLongDate } from "../utils/format.utils.js";
 import { slugify } from "../utils/slugify.utils.js";
 import { publicJobFilter, isPublishedJob } from "../utils/jobVisibility.js";
+import { isInputError, validationErrorBody } from "../utils/errors.utils.js";
 
 const DEFAULT_PAGE_SIZE = 12;
 const MAX_PAGE_SIZE = 50;
@@ -18,8 +19,9 @@ const SORT_MAP = {
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // Public shape. Review/ingestion internals (reviewStatus, review, extraction,
-// dedupeKey, source.messageId, source.postedAt) must NEVER appear here; admin
-// code builds its own view on top of this.
+// dedupeKey, source.messageId, source.postedAt) and the poster's user id
+// (postedBy) must NEVER appear here; admin code builds its own view on top of
+// this.
 export const serializeJob = (job, { saved = false } = {}) => ({
   id: job._id.toString(),
   company: job.company ?? null,
@@ -48,7 +50,6 @@ export const serializeJob = (job, { saved = false } = {}) => ({
   source: job.source?.kind
     ? { kind: job.source.kind, channel: job.source.channel || null, url: job.source.url || null }
     : null,
-  postedBy: job.postedBy ? job.postedBy.toString() : null,
   saved,
 });
 
@@ -265,12 +266,8 @@ export const createJob = async (req, res) => {
   } catch (error) {
     console.error(error);
 
-    if (error.name === "ValidationError") {
-      return res.status(400).json({ message: error.message });
-    }
-
-    if (error.name === "CastError") {
-      return res.status(400).json({ message: `Invalid value for ${error.path}.` });
+    if (isInputError(error)) {
+      return res.status(400).json(validationErrorBody(error));
     }
 
     return res.status(500).json({
@@ -342,12 +339,8 @@ export const updateJob = async (req, res) => {
   } catch (error) {
     console.error(error);
 
-    if (error.name === "ValidationError") {
-      return res.status(400).json({ message: error.message });
-    }
-
-    if (error.name === "CastError") {
-      return res.status(400).json({ message: `Invalid value for ${error.path}.` });
+    if (isInputError(error)) {
+      return res.status(400).json(validationErrorBody(error));
     }
 
     return res.status(500).json({

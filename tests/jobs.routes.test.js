@@ -93,9 +93,12 @@ describe("Job routes", () => {
       salary: "₦800,000 / month",
       category: "Design",
       applicants: 0,
-      postedBy: user._id.toString(),
       saved: false,
     });
+    // The poster's user id is internal: never part of the public job shape.
+    expect(response.body.job).not.toHaveProperty("postedBy");
+    // ...but the owner relationship is still stored.
+    expect((await Job.findById(response.body.job.id)).postedBy.toString()).toBe(user._id.toString());
     expect(typeof response.body.job.id).toBe("string");
     expect(response.body.job.posted).toBe("Today");
   });
