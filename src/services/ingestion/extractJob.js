@@ -31,6 +31,9 @@ const ModelJobSchema = z.object({
   qualification: z.string().nullable(),
   description: z.string(),
   responsibilities: z.array(z.string()),
+  aboutCompany: z.string(),
+  requirements: z.array(z.string()),
+  benefits: z.array(z.string()),
   applicationLink: z.string().nullable(),
   applyEmail: z.string().nullable(),
   applyPhone: z.string().nullable(),
@@ -57,6 +60,7 @@ Rules:
 - "Expected resumption", "deadline" and similar are not salary or employment type.
 - description: a short neutral summary in 1-3 sentences of the role, in your own words.
 - category: a short role/function label such as "Human Resources", "Sales", "Engineering"; null if unclear.
+- aboutCompany, requirements, benefits: fill each ONLY when the post itself contains that information, and take it from the post. aboutCompany comes from a section such as "About us" / "About the company" (a short plain description of what the company does, at most a few sentences, close to the post's own words). requirements come from a section such as "Requirements", "Qualifications" or "What we need" (one short item per requirement). benefits come from a section such as "Benefits", "Perks" or "What we offer" (one short item per benefit). Never invent or infer them, never fill them from general knowledge about the company, and never copy marketing taglines, slogans or hype into aboutCompany. Do not repeat the same text in several of these fields or in description, responsibilities, qualification or experience. When the post has no such information, return "" for aboutCompany and an empty array for requirements and benefits.
 - applicationLink must be a URL that appears in the post; applyEmail and applyPhone must appear in the post.
 - employmentType and workArrangement: set them ONLY when the post states them in words (e.g. "Full-time", "Contract", "Remote", "Hybrid", "On-site"). A location or an office address does NOT mean On-site. A job title does not imply an employment type. Otherwise use "Unknown". Never infer these two fields.
 - category is the only field you may derive (from the job title and duties); keep it to a short label. Do not report this derivation anywhere.
@@ -102,6 +106,9 @@ const LIMITS = {
   skills: 20,
   responsibility: 500,
   responsibilities: 15,
+  aboutCompany: 2000,
+  sectionItem: 500,
+  sectionItems: 20,
   correction: 300,
   corrections: 10,
   note: 300,
@@ -141,6 +148,104 @@ const stringList = (value, itemMax, listMax) => {
     if (out.length >= listMax) break;
   }
   return out;
+};
+
+// ---- "is this really in the post?" ---------------------------------------------------------
+// The optional sections (aboutCompany, requirements, benefits) are only kept
+// when the post itself says them. The comparison ignores case, punctuation and
+// common filler words; it is a plain-code check on the post text, so a model
+// that was talked into inventing perks cannot get them stored.
+const MIN_PRESENT_RATIO = 0.6;
+const MATCH_STOPWORDS = new Set([
+  "the", "and", "for", "with", "you", "our", "are", "have", "has", "will", "this", "that",
+  "from", "your", "their", "all", "any", "not", "but", "who", "can", "also", "such", "must",
+]);
+
+const normalizeForMatch = (value) =>
+  (String(value ?? "").normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) || []).join(" ");
+
+const significantTokens = (normalized) =>
+  normalized.split(" ").filter((token) => token.length >= 3 && !MATCH_STOPWORDS.has(token));
+
+const buildPostMatcher = (text, links = []) => {
+  const normalized = normalizeForMatch(text);
+  return {
+    padded: ` ${normalized} `,
+    tokens: new Set(significantTokens(normalized)),
+    // For the contact check below.
+    text: String(text ?? ""),
+    lower: String(text ?? "").toLowerCase(),
+    links,
+    emails: emailsInText(text),
+    phones: phonesInText(text),
+  };
+};
+
+// Hosts written without a scheme ("www.evil.com/apply").
+const WWW_HOST = /\bwww\.[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
+const LONG_DIGIT_RUN = /\d{7,}/g;
+
+// True when the candidate carries a link, a www. address, an email address or a
+// long number (7+ digits: phone, account number) that is NOT literally in the
+// post. A model that was talked into adding "apply at ..." or a contact number
+// to a bullet cannot get it stored; the same value copied from the post is fine.
+const hasUnbackedContact = (candidate, post) => {
+  for (const url of urlsInText(candidate)) {
+    if (!linkAppearsInPost(url, post.text, post.links)) return true;
+  }
+  for (const host of candidate.match(WWW_HOST) || []) {
+    if (!post.lower.includes(stripTrailingPunctuation(host).toLowerCase())) return true;
+  }
+  for (const email of emailsInText(candidate)) {
+    if (!post.emails.has(email)) return true;
+  }
+  for (const digits of phonesInText(candidate)) {
+    if (!post.phones.some((known) => samePhone(digits, known))) return true;
+  }
+  for (const run of candidate.match(LONG_DIGIT_RUN) || []) {
+    if (!post.text.includes(run)) return true;
+  }
+  return false;
+};
+
+// True when the candidate appears in the post as a phrase, or when at least
+// MIN_PRESENT_RATIO of its significant words do (the model may shorten or
+// lightly reword a bullet). Linear in the size of both texts.
+const appearsInPost = (candidate, post) => {
+  const wanted = normalizeForMatch(candidate);
+  if (!wanted) return false;
+  if (post.padded.includes(` ${wanted} `)) return true;
+
+  const tokens = significantTokens(wanted);
+  if (tokens.length === 0) return false;
+  const found = tokens.filter((token) => post.tokens.has(token)).length;
+  return found / tokens.length >= MIN_PRESENT_RATIO;
+};
+
+// Items that are not in the post are dropped (and reported through `drop`).
+const postBackedList = (value, post, name, drop) => {
+  const out = [];
+  for (const item of Array.isArray(value) ? value : []) {
+    const text = oneLine(item, LIMITS.sectionItem);
+    if (!text || out.includes(text)) continue;
+    if (!appearsInPost(text, post) || hasUnbackedContact(text, post)) {
+      drop(name);
+      continue;
+    }
+    out.push(text);
+    if (out.length >= LIMITS.sectionItems) break;
+  }
+  return out;
+};
+
+const postBackedText = (value, post, name, drop) => {
+  const text = multiLine(value, LIMITS.aboutCompany);
+  if (!text) return "";
+  if (!appearsInPost(text, post) || hasUnbackedContact(text, post)) {
+    drop(name);
+    return "";
+  }
+  return text;
 };
 
 const pickEnum = (value, allowed) => (allowed.includes(value) ? value : undefined);
@@ -232,6 +337,7 @@ export function sanitizeExtraction({ jobs } = {}, { text = "", links = [] } = {}
   const postEmails = emailsInText(postText);
   const postPhones = phonesInText(postText);
   const fallbackDescription = multiLine(postText, 300);
+  const postMatcher = buildPostMatcher(postText, links);
 
   const sanitized = [];
 
@@ -321,6 +427,9 @@ export function sanitizeExtraction({ jobs } = {}, { text = "", links = [] } = {}
       qualification: oneLine(raw.qualification, LIMITS.qualification),
       description: multiLine(raw.description, LIMITS.description) ?? fallbackDescription,
       responsibilities: stringList(raw.responsibilities, LIMITS.responsibility, LIMITS.responsibilities),
+      aboutCompany: postBackedText(raw.aboutCompany, postMatcher, "aboutCompany", drop),
+      requirements: postBackedList(raw.requirements, postMatcher, "requirements", drop),
+      benefits: postBackedList(raw.benefits, postMatcher, "benefits", drop),
       applicationLink,
       applyEmail,
       applyPhone,

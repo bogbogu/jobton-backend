@@ -5,13 +5,14 @@ import {
   approveJob,
   rejectJob,
   bulkRejectJobs,
+  restoreJob,
 } from "../controllers/adminJob.controller.js";
 import {
   listChannels,
   createChannel,
   updateChannel,
 } from "../controllers/adminChannel.controller.js";
-import protect, { requireAdmin } from "../middleware/auth.middleware.js";
+import protect, { requireAdmin, requireSuperAdmin } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
@@ -24,6 +25,8 @@ router.post("/jobs/bulk-reject", bulkRejectJobs);
 router.get("/jobs/:id", getAdminJob);
 router.post("/jobs/:id/approve", approveJob);
 router.post("/jobs/:id/reject", rejectJob);
+// Superadmin only; plain admins get 403 FORBIDDEN_ROLE.
+router.post("/jobs/:id/restore", requireSuperAdmin, restoreJob);
 
 router.get("/telegram-channels", listChannels);
 router.post("/telegram-channels", createChannel);

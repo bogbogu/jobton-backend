@@ -15,7 +15,7 @@ export const RED_FLAGS = Object.freeze({
   FREE_MAIL: "free_mail_contact_for_named_company",
 });
 
-const FREE_MAIL_DOMAINS = new Set([
+export const FREE_MAIL_DOMAINS = new Set([
   "gmail.com",
   "googlemail.com",
   "yahoo.com",

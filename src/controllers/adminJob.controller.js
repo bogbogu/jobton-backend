@@ -5,6 +5,7 @@ import { serializeJob } from "./job.controller.js";
 import { publicJobFilter, REVIEW_STATUSES } from "../utils/jobVisibility.js";
 import { cleanText } from "../utils/validators.utils.js";
 import { toFieldErrors } from "../utils/errors.utils.js";
+import { deriveCompanyDomain } from "../utils/companyDomain.js";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -33,6 +34,9 @@ const APPROVAL_EDITABLE_FIELDS = [
   "qualification",
   "description",
   "responsibilities",
+  "aboutCompany",
+  "requirements",
+  "benefits",
   "applicationLink",
   "applyEmail",
   "applyPhone",
@@ -81,6 +85,10 @@ export const serializeAdminJob = (job) => {
       reviewedBy: idToString(review.reviewedBy),
       reviewedAt: review.reviewedAt || null,
       rejectionReason: review.rejectionReason || null,
+      // Set when a superadmin sent the job back to review. The review data
+      // above is kept as history; who restored it is not exposed.
+      restoredAt: review.restoredAt || null,
+      restoredFromStatus: review.restoredFromStatus || null,
     },
     source: {
       kind: source.kind || null,
@@ -329,6 +337,19 @@ export const approveJob = async (req, res) => {
       }
     }
 
+    // Logos come from `domain`. A job that still has none after the edits gets
+    // the employer's domain derived from how to apply, when the company name or
+    // the apply email vouches for the link (shared hosts, free-mail addresses and
+    // unvouched links give none). A domain a person typed is never replaced.
+    if (!validated.domain) {
+      const derived = deriveCompanyDomain({
+        applicationLink: validated.applicationLink,
+        applyEmail: validated.applyEmail,
+        company: validated.company,
+      });
+      if (derived) set.domain = derived;
+    }
+
     const published = await Job.findOneAndUpdate(
       // updatedAt in the filter: an owner edit landing between our read and
       // this write changes it, so unseen content is never published.
@@ -394,6 +415,8 @@ const parseReason = (value) => {
   return { reason: reason || undefined };
 };
 
+// A restored job may still carry the reason from its earlier rejection; a new
+// rejection without a reason must not show that stale one.
 const rejectionUpdate = (adminId, reason) => ({
   $set: {
     reviewStatus: "rejected",
@@ -401,6 +424,7 @@ const rejectionUpdate = (adminId, reason) => ({
     "review.reviewedAt": new Date(),
     ...(reason ? { "review.rejectionReason": reason } : {}),
   },
+  ...(reason ? {} : { $unset: { "review.rejectionReason": "" } }),
 });
 
 export const rejectJob = async (req, res) => {
@@ -440,6 +464,111 @@ export const rejectJob = async (req, res) => {
     return res.status(200).json({
       message: "Job rejected.",
       job: serializeAdminJob(rejected),
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+// Superadmin only (see admin.routes.js). Sends a rejected or published job back
+// to "pending_review" so it can be reviewed again. `expectedUpdatedAt` is required. Nothing is wiped: the earlier
+// reviewer, review time and rejection reason stay as the audit trail, and the
+// restore itself is recorded in review.restoredBy/restoredAt/restoredFromStatus.
+export const restoreJob = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectIdString(id)) {
+      return res.status(404).json({ message: "Job not found." });
+    }
+
+    const body = req.body || {};
+
+    // Required, like approve: a superadmin only restores the version they looked
+    // at. Checked before any database access.
+    if (body.expectedUpdatedAt === undefined || body.expectedUpdatedAt === null) {
+      return res.status(400).json({
+        message:
+          "expectedUpdatedAt is required: send the updatedAt of the job version you reviewed.",
+        error: "EXPECTED_UPDATED_AT_REQUIRED",
+      });
+    }
+
+    // Only a string or a number can be a timestamp; anything else (or an invalid
+    // date) counts as a stale version, as in approve.
+    const raw = body.expectedUpdatedAt;
+    const expected = typeof raw === "string" || typeof raw === "number" ? new Date(raw) : null;
+    if (!expected || Number.isNaN(expected.getTime())) {
+      return res.status(409).json({
+        message: "This job changed after you opened it. Reload it and try again.",
+        error: "STALE",
+      });
+    }
+
+    const current = await Job.findById(id);
+
+    if (!current) {
+      return res.status(404).json({ message: "Job not found." });
+    }
+
+    // Legacy documents without a reviewStatus count as published.
+    const fromStatus = current.reviewStatus || "published";
+
+    if (fromStatus !== "rejected" && fromStatus !== "published") {
+      return res.status(409).json({
+        message: "Job is already pending review.",
+        error: "NOT_RESTORABLE",
+      });
+    }
+
+    if (!current.updatedAt || expected.getTime() !== current.updatedAt.getTime()) {
+      return res.status(409).json({
+        message: "This job changed after you opened it. Reload it and try again.",
+        error: "STALE",
+      });
+    }
+
+    const restored = await Job.findOneAndUpdate(
+      {
+        _id: current._id,
+        reviewStatus: fromStatus === "rejected" ? "rejected" : publicJobFilter().reviewStatus,
+        updatedAt: expected,
+      },
+      {
+        $set: {
+          reviewStatus: "pending_review",
+          "review.restoredBy": req.user._id,
+          "review.restoredAt": new Date(),
+          "review.restoredFromStatus": fromStatus,
+        },
+      },
+      { returnDocument: "after" }
+    );
+
+    if (!restored) {
+      // Changed between our read and the write.
+      const latest = await Job.findById(current._id).select("reviewStatus");
+      if (!latest) {
+        return res.status(404).json({ message: "Job not found." });
+      }
+      if (latest.reviewStatus === "pending_review") {
+        return res.status(409).json({
+          message: "Job is already pending review.",
+          error: "NOT_RESTORABLE",
+        });
+      }
+      return res.status(409).json({
+        message: "This job changed after you opened it. Reload it and try again.",
+        error: "STALE",
+      });
+    }
+
+    audit("restore", req.user._id, restored._id, `from=${fromStatus}`);
+
+    return res.status(200).json({
+      message: "Job restored to pending review.",
+      job: serializeAdminJob(restored),
     });
   } catch (error) {
     console.error(error);
