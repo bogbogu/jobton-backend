@@ -45,23 +45,6 @@ const allowedOrigins = String(process.env.CORS_ALLOWED_ORIGINS || process.env.FR
 app.disable("x-powered-by");
 configureTrustProxy(app);
 
-// Temporary, and off unless TRUST_PROXY_DEBUG=1: shows how the proxies present
-// the caller (only the caller's own request) so the right TRUST_PROXY_HOPS can
-// be chosen. Remove once the value is settled.
-if (process.env.TRUST_PROXY_DEBUG === "1") {
-    app.get("/api/_diag/ip", (req, res) => {
-        res.set("Cache-Control", "no-store");
-        res.json({
-            ip: req.ip,
-            ips: req.ips,
-            xForwardedFor: req.headers["x-forwarded-for"] || null,
-            cfConnectingIp: req.headers["cf-connecting-ip"] || null,
-            trueClientIp: req.headers["true-client-ip"] || null,
-            instance: process.env.RENDER_INSTANCE_ID || null,
-        });
-    });
-}
-
 // middleware
 app.use(helmet());
 app.use(cors({
