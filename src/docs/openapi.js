@@ -190,7 +190,6 @@ const jobOutputProperties = {
       url: nullable({ type: "string", format: "uri" }),
     },
   }),
-  postedBy: nullable({ type: "string", description: "Id of the user who posted the job; `null` for seeded/ingested jobs (admin-only to modify)." }),
   saved: { type: "boolean", description: "Whether the calling user saved this job. Always `false` for anonymous callers." },
 };
 
@@ -247,7 +246,13 @@ const schemas = {
       error: {
         type: "string",
         description:
-          "Machine-readable code, present only where the frontend needs to branch on it (e.g. `NOT_PENDING`, `STALE`, `MISSING_FIELDS`, `VALIDATION_ERROR`, `INVALID_REVIEW_STATUS`, `DUPLICATE_CHANNEL`, `INVALID_USERNAME`, `EMAIL_NOT_VERIFIED`, `RATE_LIMITED`). Many simple validation errors only carry `message`.",
+          "Machine-readable code, present only where the frontend needs to branch on it (e.g. `NOT_PENDING`, `STALE`, `MISSING_FIELDS`, `VALIDATION_ERROR`, `INVALID_INPUT`, `INVALID_JSON`, `PAYLOAD_TOO_LARGE`, `NOT_FOUND`, `INVALID_REVIEW_STATUS`, `DUPLICATE_CHANNEL`, `INVALID_USERNAME`, `EMAIL_NOT_VERIFIED`, `RATE_LIMITED`). Many simple validation errors only carry `message`.",
+      },
+      fields: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description:
+          "Only with `VALIDATION_ERROR`: field name to a short, fixed explanation. Never contains the submitted value, model names or driver text.",
       },
     },
   },
@@ -266,6 +271,7 @@ const schemas = {
     type: "object",
     properties: {
       id: { type: "string" },
+      name: { type: "string", description: "firstName and lastName joined by a space." },
       firstName: { type: "string" },
       lastName: { type: "string" },
       email: { type: "string", format: "email" },
@@ -276,17 +282,16 @@ const schemas = {
 
   CurrentUser: {
     type: "object",
-    description: "The stored user document (password and token fields are never included).",
+    description:
+      "The same allow-listed user shape as login and register. Passwords, verification/reset tokens and their expiry dates, `__v` and timestamps are never included.",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
+      name: { type: "string", description: "firstName and lastName joined by a space." },
       firstName: { type: "string" },
       lastName: { type: "string" },
       email: { type: "string", format: "email" },
       role: { type: "string", enum: ["user", "admin"] },
       isVerified: { type: "boolean" },
-      createdAt: { type: "string", format: "date-time" },
-      updatedAt: { type: "string", format: "date-time" },
-      __v: { type: "integer" },
     },
   },
 
@@ -327,6 +332,7 @@ const schemas = {
       "Full admin view of a job: the public fields plus raw values for the review form, review state and ingestion provenance.",
     properties: {
       ...jobOutputProperties,
+      postedBy: nullable({ type: "string", description: "Id of the user who posted the job; `null` for seeded/ingested jobs. Admin view only: the public job shape never includes it." }),
       source: {
         type: "object",
         description: "Provenance. All fields are `null` for jobs not imported from Telegram.",
@@ -808,7 +814,7 @@ const paths = {
     get: operation({
       tag: "Auth",
       summary: "Get the logged-in user",
-      description: "Returns the user document directly (no `message` wrapper). Handy for checking that your token works.",
+      description: "Returns the allow-listed user directly (no `message` wrapper). Handy for checking that your token works.",
       access: "bearer",
       responses: {
         200: ok("The current user.", ref("CurrentUser")),
@@ -894,8 +900,8 @@ const paths = {
             "missingFields",
             "title, company, location, employmentType, salaryMin, category, description, and applicationLink are required.",
           ],
-          ["validation", "Job validation failed: applicationLink: applicationLink must be an http(s) URL."],
-          ["cast", "Invalid value for salaryMin."],
+          ["validation", "Validation failed. applicationLink must be an http(s) URL.", "VALIDATION_ERROR"],
+          ["cast", "Validation failed. salaryMin has an invalid value.", "VALIDATION_ERROR"],
         ]),
       },
     }),
@@ -952,8 +958,8 @@ const paths = {
           properties: { message: { type: "string", example: "Job updated successfully." }, job: ref("Job") },
         }),
         400: failure("A changed field failed validation.", [
-          ["validation", "Job validation failed: applicationLink: applicationLink must be an http(s) URL."],
-          ["cast", "Invalid value for salaryMin."],
+          ["validation", "Validation failed. applicationLink must be an http(s) URL.", "VALIDATION_ERROR"],
+          ["cast", "Validation failed. salaryMin has an invalid value.", "VALIDATION_ERROR"],
         ]),
         403: failure("The caller is neither the owner nor an admin (also true for jobs with no owner).", [
           ["notOwner", "You do not have permission to modify this job."],
@@ -1061,7 +1067,7 @@ const paths = {
             "missingFields",
             "name, role, category, location, hourlyRate, yearsExperience, bio, email, and phone are required.",
           ],
-          ["validation", "Freelancer validation failed: rating: Path `rating` (6) is more than maximum allowed value (5)."],
+          ["validation", "Validation failed. rating must be at most 5.", "VALIDATION_ERROR"],
         ]),
       },
     }),
@@ -1100,7 +1106,7 @@ const paths = {
           },
         }),
         400: failure("A field failed validation.", [
-          ["validation", "Freelancer validation failed: rating: Path `rating` (6) is more than maximum allowed value (5)."],
+          ["validation", "Validation failed. rating must be at most 5.", "VALIDATION_ERROR"],
         ]),
         403: failure("The caller is neither the owner nor an admin.", [
           ["notOwner", "You do not have permission to modify this freelancer profile."],
@@ -1164,7 +1170,7 @@ const paths = {
         }),
         400: failure("`name` missing or a field failed validation.", [
           ["missingName", "name is required."],
-          ["validation", "Company validation failed: website: website must be an http(s) URL."],
+          ["validation", "Validation failed. website must be an http(s) URL.", "VALIDATION_ERROR"],
         ]),
         409: failure("A company with this name already exists.", [
           ["duplicate", "A company with this name already exists."],
@@ -1222,7 +1228,7 @@ const paths = {
           },
         }),
         400: failure("A field failed validation.", [
-          ["validation", "Company validation failed: website: website must be an http(s) URL."],
+          ["validation", "Validation failed. website must be an http(s) URL.", "VALIDATION_ERROR"],
         ]),
         403: failure("The caller is not an admin.", [["notAdmin", "Only an admin can modify company profiles."]]),
         404: failure("No company with this slug.", [["notFound", "Company not found."]]),
