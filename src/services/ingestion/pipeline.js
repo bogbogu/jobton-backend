@@ -8,6 +8,7 @@ import IngestionUsage, {
   reserveLlmCall,
 } from "../../models/ingestionUsage.model.js";
 import { cleanText, classifyLink } from "../../utils/validators.utils.js";
+import { deriveCompanyDomain } from "../../utils/companyDomain.js";
 import { getConfig } from "./config.js";
 import { computeDedupeKey, hashPostText } from "./dedupe.js";
 import { extractJobsFromPost } from "./extractJob.js";
@@ -318,6 +319,11 @@ async function createPendingJob({ extracted, post, extraction, config }) {
   const redFlags = computeRedFlags({ job: extracted, text: post.text, linkClass });
   const missing = missingFields(extracted);
   const hasSalary = hasValue(extracted.salaryMin);
+  const domain = deriveCompanyDomain({
+    applicationLink: extracted.applicationLink,
+    applyEmail: extracted.applyEmail,
+    company: extracted.company,
+  });
 
   try {
     const job = await Job.create({
@@ -336,6 +342,11 @@ async function createPendingJob({ extracted, post, extraction, config }) {
       qualification: extracted.qualification,
       description: extracted.description,
       responsibilities: extracted.responsibilities,
+      aboutCompany: extracted.aboutCompany,
+      requirements: extracted.requirements,
+      benefits: extracted.benefits,
+      // The extractor never returns a domain: it comes from how to apply, for the logo.
+      ...(domain ? { domain } : {}),
       applicationLink: extracted.applicationLink,
       applyEmail: extracted.applyEmail,
       applyPhone: extracted.applyPhone,

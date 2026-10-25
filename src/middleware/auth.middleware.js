@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import User from "../models/user.model.js";
+import { isAdminRole, isSuperAdminRole } from "../utils/roles.js";
 
 // Pin the algorithm: never let the token's own header choose how it is verified.
 const JWT_VERIFY_OPTIONS = { algorithms: ["HS256"] };
@@ -89,9 +90,23 @@ export const optionalAuth = async (req, res, next) => {
 
 // Must run after `protect` (needs req.user). The role is read from the
 // database on every request by `protect`, never from the JWT.
+// Accepts "admin" and "superadmin".
 export const requireAdmin = (req, res, next) => {
-  if (!req.user || req.user.role !== "admin") {
+  if (!req.user || !isAdminRole(req.user.role)) {
     return res.status(403).json({ message: "Admin access required." });
+  }
+
+  return next();
+};
+
+// Must run after `protect`. Superadmin only (e.g. restoring a rejected or
+// published job to review); a plain admin gets 403 FORBIDDEN_ROLE.
+export const requireSuperAdmin = (req, res, next) => {
+  if (!req.user || !isSuperAdminRole(req.user.role)) {
+    return res.status(403).json({
+      message: "Superadmin access required.",
+      error: "FORBIDDEN_ROLE",
+    });
   }
 
   return next();

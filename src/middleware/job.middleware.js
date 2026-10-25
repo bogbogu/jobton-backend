@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import Job from "../models/job.model.js";
 import { isPublishedJob } from "../utils/jobVisibility.js";
+import { isAdminRole } from "../utils/roles.js";
 
 // Must run after `protect` (needs req.user). A job that is not published is
 // loadable only by an admin or its owner; everyone else gets the same 404 as
@@ -21,7 +22,7 @@ export const loadJob = async (req, res, next) => {
 
     if (!isPublishedJob(job)) {
       const isOwner = Boolean(job.postedBy) && Boolean(req.user) && job.postedBy.toString() === req.user._id.toString();
-      const isAdmin = req.user?.role === "admin";
+      const isAdmin = isAdminRole(req.user?.role);
 
       if (!isOwner && !isAdmin) {
         return res.status(404).json({ message: "Job not found." });
@@ -65,7 +66,7 @@ export const loadJobForUnsave = async (req, res, next) => {
 
 export const requireJobOwner = (req, res, next) => {
   const isOwner = req.job.postedBy && req.job.postedBy.toString() === req.user._id.toString();
-  const isAdmin = req.user.role === "admin";
+  const isAdmin = isAdminRole(req.user.role);
 
   if (!isOwner && !isAdmin) {
     return res.status(403).json({

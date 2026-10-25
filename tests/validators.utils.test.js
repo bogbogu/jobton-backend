@@ -36,6 +36,45 @@ describe("cleanText", () => {
   });
 });
 
+describe("cleanText is idempotent", () => {
+  it("does not leave a tag behind when removing one joins the pieces around it", () => {
+    // Built from parts: removing the inner "<b>" tags would otherwise leave a real script tag.
+    const nested = ["<", "<b>", "script>alert(1)", "<", "<b>", "/script>"].join("");
+    const cleaned = cleanText(nested);
+
+    expect(cleaned).toBe("alert(1)");
+    expect(cleaned).not.toMatch(/[<>]/);
+    expect(cleanText(cleaned)).toBe(cleaned);
+  });
+
+  it("handles a tag that only forms once an invisible character is removed", () => {
+    const hidden = `<​script>alert(1)</script>`;
+    const cleaned = cleanText(hidden);
+
+    expect(cleaned).toBe("alert(1)");
+    expect(cleanText(cleaned)).toBe(cleaned);
+  });
+
+  it("gives the same result when run on its own output, for deeply nested input", () => {
+    for (const input of [
+      "<<<b>>b>script>x<<</b>/b>/b>script>",
+      "<".repeat(50) + "b>" + "x",
+      "<<b><<b>script>>",
+      `${"<<b>".repeat(8)}script>x`,
+      "plain text",
+      "a < b > c",
+    ]) {
+      const once = cleanText(input);
+      expect(cleanText(once), input).toBe(once);
+    }
+  });
+
+  it("removes leftover angle brackets once something was cleaned, and keeps them in untouched text", () => {
+    expect(cleanText("<b>bold</b> and 3 > 2")).toBe("bold and 3  2");
+    expect(cleanText("x < y and y > z")).toBe("x < y and y > z");
+  });
+});
+
 describe("isSafeHttpUrl", () => {
   it("accepts normal URLs, including percent-encoding and unicode letters in paths", () => {
     expect(isSafeHttpUrl("https://acme.com/careers/42?a=b%20c")).toBe(true);
