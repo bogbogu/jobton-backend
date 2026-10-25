@@ -4,7 +4,6 @@ import validator from "validator";
 const REQUIRED_EMAIL_ENV_VARS = [
   "RESEND_API_KEY",
   "RESEND_FROM_EMAIL",
-  "RESEND_TO_EMAIL",
   "FRONTEND_URL",
 ];
 
@@ -22,7 +21,6 @@ const getMissingEmailEnvVars = () => {
 const getInvalidEmailEnvVars = () => {
   const invalidVars = [];
   const fromEmail = getEnvValue("RESEND_FROM_EMAIL");
-  const defaultToEmail = getEnvValue("RESEND_TO_EMAIL");
   const frontendUrl = getEnvValue("FRONTEND_URL");
 
   const parsedFromEmail = fromEmail.includes("<")
@@ -31,10 +29,6 @@ const getInvalidEmailEnvVars = () => {
 
   if (fromEmail && !validator.isEmail(parsedFromEmail)) {
     invalidVars.push("RESEND_FROM_EMAIL");
-  }
-
-  if (defaultToEmail && !validator.isEmail(defaultToEmail)) {
-    invalidVars.push("RESEND_TO_EMAIL");
   }
 
   if (
@@ -69,7 +63,6 @@ const getEmailConfig = () => {
   return {
     apiKey: getEnvValue("RESEND_API_KEY"),
     fromEmail: getEnvValue("RESEND_FROM_EMAIL"),
-    defaultToEmail: getEnvValue("RESEND_TO_EMAIL"),
     frontendUrl: getEnvValue("FRONTEND_URL"),
   };
 };
@@ -81,6 +74,18 @@ const getResendClient = () => {
   }
 
   return resendClient;
+};
+
+// Verification and reset emails carry credentials (a login-equivalent link and
+// code), so they go to the account's own address and nowhere else: no BCC, no
+// fallback recipient. A missing address is a programming error, not a reason
+// to send the credential to a default mailbox.
+const requireRecipient = (toEmail) => {
+  if (typeof toEmail !== "string" || !validator.isEmail(toEmail)) {
+    throw new Error("A valid recipient email address is required.");
+  }
+
+  return toEmail;
 };
 
 // The Resend SDK does NOT throw when its API rejects a message (unverified
@@ -117,19 +122,17 @@ export const sendVerificationEmail = async ({
   verificationCode,
   expiresInMinutes,
 }) => {
-  const { fromEmail, defaultToEmail, frontendUrl } = getEmailConfig();
+  const { fromEmail, frontendUrl } = getEmailConfig();
+  const recipient = requireRecipient(toEmail);
   const verificationLink = `${frontendUrl.replace(/\/$/, "")}/verify-email?token=${encodeURIComponent(verificationToken)}`;
-  const recipient = toEmail || defaultToEmail;
-  const bcc = recipient !== defaultToEmail ? [defaultToEmail] : undefined;
 
   return sendOrThrow({
     from: fromEmail,
     to: [recipient],
-    bcc,
     subject: "Verify your Jobton email address",
     html: `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937;">
   <h2 style="margin-bottom: 12px;">Welcome to Jobton!</h2>
-  <p>Hi ${firstName || "there"},</p>
+  <p>Hi ${validator.escape(String(firstName || "there"))},</p>
   <p>
     Welcome to <strong>Jobton</strong>. We are excited to have you join our growing community.
   </p>
@@ -167,19 +170,17 @@ export const sendResetPasswordEmail = async ({
   resetToken,
   expiresInMinutes,
 }) => {
-  const { fromEmail, defaultToEmail, frontendUrl } = getEmailConfig();
+  const { fromEmail, frontendUrl } = getEmailConfig();
+  const recipient = requireRecipient(toEmail);
   const resetLink = `${frontendUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(resetToken)}`;
-  const recipient = toEmail || defaultToEmail;
-  const bcc = recipient !== defaultToEmail ? [defaultToEmail] : undefined;
 
   return sendOrThrow({
     from: fromEmail,
     to: [recipient],
-    bcc,
     subject: "Reset your Jobton password",
     html: `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937;">
   <h2 style="margin-bottom: 12px;">Password Reset Request</h2>
-  <p>Hi ${firstName || "there"},</p>
+  <p>Hi ${validator.escape(String(firstName || "there"))},</p>
   <p>
     We received a request to reset your Jobton password.
   </p>

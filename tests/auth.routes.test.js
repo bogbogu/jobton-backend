@@ -425,7 +425,7 @@ describe("Auth routes", () => {
     expect(createdUser).toBeNull();
   });
 
-  it("login should treat an object-shaped email as a plain (non-matching) string, not a query operator", async () => {
+  it("login should reject an object-shaped email with 400 instead of treating it as a query operator", async () => {
     await createVerifiedUser({
       email: "victim@example.com",
       passwordHash:
@@ -437,7 +437,8 @@ describe("Auth routes", () => {
       password: "whatever",
     });
 
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("INVALID_INPUT");
     expect(response.body.token).toBeUndefined();
   });
 

@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import Freelancer from "../models/freelancer.model.js";
+import { isInputError, validationErrorBody } from "../utils/errors.utils.js";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -27,16 +28,20 @@ export const serializeFreelancer = (freelancer) => ({
   })),
 });
 
+// Query values can be arrays (?q=a&q=b); only plain strings are used.
+const asString = (value) => (typeof value === "string" && value.trim() ? value.trim() : null);
+
 const buildFreelancerFilter = (query) => {
   const filter = {};
-  const { q, category } = query;
+  const q = asString(query.q);
+  const category = asString(query.category);
 
   if (category && category !== "All") {
     filter.category = category;
   }
 
   if (q) {
-    const pattern = new RegExp(escapeRegExp(String(q).trim()), "i");
+    const pattern = new RegExp(escapeRegExp(q), "i");
     filter.$or = [{ name: pattern }, { role: pattern }, { location: pattern }, { skills: pattern }];
   }
 
@@ -169,8 +174,8 @@ export const createFreelancer = async (req, res) => {
   } catch (error) {
     console.error(error);
 
-    if (error.name === "ValidationError") {
-      return res.status(400).json({ message: error.message });
+    if (isInputError(error)) {
+      return res.status(400).json(validationErrorBody(error));
     }
 
     return res.status(500).json({
@@ -215,8 +220,8 @@ export const updateFreelancer = async (req, res) => {
   } catch (error) {
     console.error(error);
 
-    if (error.name === "ValidationError") {
-      return res.status(400).json({ message: error.message });
+    if (isInputError(error)) {
+      return res.status(400).json(validationErrorBody(error));
     }
 
     return res.status(500).json({

@@ -37,7 +37,7 @@ Protected routes require `Authorization: Bearer <jwt>`.
 | POST | `/resend-verification` | — | `{email}`, rate-limited |
 | POST | `/forgot-password` | — | `{email}`, always `200` (no enumeration) |
 | POST | `/reset-password` | — | `{token, password}` |
-| GET | `/me` | required | returns the current user |
+| GET | `/me` | required | returns the current user as `{id, name, firstName, lastName, email, role, isVerified}` (same allow-list as login/register; no wrapper) |
 
 ### Jobs — `/api/jobs`
 
@@ -105,7 +105,6 @@ frontend, with the differences called out below):
   "description": "...",
   "responsibilities": ["..."],
   "applicationLink": "https://flutterwave.com/careers/123",
-  "postedBy": "665f1c2e9a1b2c3d4e5f6788",
   "saved": false
 }
 ```
@@ -369,6 +368,25 @@ To call protected endpoints:
 2. Copy the `token` from the response.
 3. Click **Authorize** (top right), paste the token (without `Bearer`) and confirm.
 4. **Try it out** on any padlock endpoint; the token is sent automatically (it lasts 7 days by default). Admin endpoints need an account with role `admin`.
+
+## Error responses and hardening
+
+- Every client error is `{ message, error? }`; `error` is a machine-readable code.
+- Validation failures on jobs, freelancers, companies (and admin approve) are
+  `400 { message, error: "VALIDATION_ERROR", fields: { field: "short explanation" } }`.
+  `message` is a readable summary of the same text. Submitted values, model
+  names and driver text are never echoed.
+- Credentials, tokens and names sent to `/api/auth/*` must be strings; objects or
+  arrays are `400 INVALID_INPUT`.
+- Bodies are limited to 100kb (`413 PAYLOAD_TOO_LARGE`); malformed JSON is
+  `400 INVALID_JSON`; unknown routes are `404 { message: "Not found.", error: "NOT_FOUND" }`.
+  Unexpected errors are always `500 { message: "Internal server error." }`.
+- Responses under `/api/auth`, `/api/freelancers`, `/api/admin` and `GET /api/jobs/saved`
+  carry `Cache-Control: no-store`.
+- The poster's user id (`postedBy`) is only visible in the admin job view.
+- JWTs are HS256 only. The server refuses to start without `JWT_SECRET`.
+- Verification and reset emails go only to the account's own address (no BCC);
+  `RESEND_TO_EMAIL` is no longer used.
 
 ## Known gaps intentionally not built yet
 
