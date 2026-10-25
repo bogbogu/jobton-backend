@@ -430,8 +430,10 @@ export const resetPassword = async (req, res) => {
     }
 
     user.password = await bcrypt.hash(password, 10);
-    user.passwordResetUsedAt = new Date();
-    user.passwordResetExpiresAt = new Date();
+    const now = new Date();
+    user.passwordResetUsedAt = now;
+    user.passwordResetExpiresAt = now;
+    user.passwordChangedAt = now;
     await user.save();
 
     return res.status(200).json({

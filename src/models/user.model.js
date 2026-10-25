@@ -75,6 +75,13 @@ const UserSchema = new mongoose.Schema(
       default: null,
       select: false,
     },
+
+    // Set when the password is reset. Logins issued before this moment are
+    // refused (see auth.middleware.js), so a stolen token stops working.
+    passwordChangedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,

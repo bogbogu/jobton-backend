@@ -4,6 +4,14 @@ import User from "../models/user.model.js";
 // Pin the algorithm: never let the token's own header choose how it is verified.
 const JWT_VERIFY_OPTIONS = { algorithms: ["HS256"] };
 
+// A token issued before the user's last password reset is no longer valid.
+// Token times are whole seconds, so compare at that precision.
+const issuedBeforePasswordChange = (decoded, user) => {
+  if (!user.passwordChangedAt) return false;
+  const changedAt = Math.floor(new Date(user.passwordChangedAt).getTime() / 1000);
+  return !Number.isFinite(decoded.iat) || decoded.iat < changedAt;
+};
+
 const protect = async (req, res, next) => {
   try {
     let token;
@@ -24,6 +32,12 @@ const protect = async (req, res, next) => {
       if (!user) {
         return res.status(401).json({
           message: "Not authorized. User no longer exists.",
+        });
+      }
+
+      if (issuedBeforePasswordChange(decoded, user)) {
+        return res.status(401).json({
+          message: "Not authorized. Please log in again.",
         });
       }
 
@@ -63,7 +77,7 @@ export const optionalAuth = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET, JWT_VERIFY_OPTIONS);
     const user = await User.findById(decoded.id);
 
-    if (user) {
+    if (user && !issuedBeforePasswordChange(decoded, user)) {
       req.user = user;
     }
 
