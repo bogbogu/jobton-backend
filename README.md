@@ -387,6 +387,9 @@ To call protected endpoints:
 - JWTs are HS256 only. The server refuses to start without `JWT_SECRET`.
 - Verification and reset emails go only to the account's own address (no BCC);
   `RESEND_TO_EMAIL` is no longer used.
+- `TRUST_PROXY_HOPS` (optional, 1 to 5) is the number of reverse proxies in front of the
+  app. Set it in production so the rate limiters count each visitor separately; without
+  it every visitor shares one bucket. `true` is intentionally not accepted.
 
 ## Known gaps intentionally not built yet
 

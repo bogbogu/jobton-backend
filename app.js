@@ -19,6 +19,7 @@ import docsRoutes from "./src/routes/docs.routes.js";
 import noStore from "./src/middleware/cacheControl.middleware.js";
 import { notFoundHandler, errorHandler } from "./src/middleware/error.middleware.js";
 import { validateEmailConfig } from "./src/utils/email.service.js";
+import { configureTrustProxy } from "./src/utils/trustProxy.js";
 
 const port = process.env.PORT || 3000;
 
@@ -42,6 +43,7 @@ const allowedOrigins = String(process.env.CORS_ALLOWED_ORIGINS || process.env.FR
 // Do not advertise the framework. (Helmet also removes this header; the explicit
 // call keeps it off even if helmet is reconfigured or removed.)
 app.disable("x-powered-by");
+configureTrustProxy(app);
 
 // middleware
 app.use(helmet());
