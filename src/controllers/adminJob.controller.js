@@ -6,6 +6,7 @@ import { publicJobFilter, REVIEW_STATUSES } from "../utils/jobVisibility.js";
 import { cleanText } from "../utils/validators.utils.js";
 import { toFieldErrors } from "../utils/errors.utils.js";
 import { deriveCompanyDomain } from "../utils/companyDomain.js";
+import { filterAllowedImageUrls } from "../utils/telegramImageUrl.js";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -96,9 +97,14 @@ export const serializeAdminJob = (job) => {
       messageId: source.messageId ?? null,
       url: source.url || null,
       postedAt: source.postedAt || null,
+      // Admin only: photos of the source post on Telegram's CDN, re-checked
+      // against the allow-list on the way out. The public shape has no such field.
+      imageUrls: filterAllowedImageUrls(source.imageUrls),
     },
     extraction: {
       ...extraction,
+      fromImage: extraction.fromImage === true,
+      imageText: typeof extraction.imageText === "string" ? extraction.imageText : "",
       post: idToString(extraction.post),
     },
     createdAt: plain.createdAt,

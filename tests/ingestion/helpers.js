@@ -5,13 +5,20 @@ export const escapeHtml = (value) =>
   String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 // Builds a t.me/s style page. `posts`: [{ id, text, date, image }]
+// `image` is true (a photo wrap without a URL) or an array of photo URLs.
 export function makePage(channel, posts) {
   const wraps = posts
     .map((post) => {
       const body = post.text
         ? `<div class="tgme_widget_message_text js-message_text" dir="auto">${escapeHtml(post.text).replace(/\n/g, "<br/>")}</div>`
         : "";
-      const image = post.image ? '<a class="tgme_widget_message_photo_wrap" href="#"></a>' : "";
+      const photo = (url) =>
+        `<a class="tgme_widget_message_photo_wrap" href="#" style="width:800px;background-image:url('${url}')"></a>`;
+      const image = Array.isArray(post.image)
+        ? post.image.map(photo).join("")
+        : post.image
+          ? '<a class="tgme_widget_message_photo_wrap" href="#"></a>'
+          : "";
       const date = post.date || "2026-10-01T08:00:00+00:00";
       return `<div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="tgme_widget_message js-widget_message" data-post="${channel}/${post.id}"><div class="tgme_widget_message_bubble">${image}${body}<div class="tgme_widget_message_footer"><span class="tgme_widget_message_meta"><a class="tgme_widget_message_date" href="https://t.me/${channel}/${post.id}"><time datetime="${date}">x</time></a></span></div></div></div></div>`;
     })
@@ -107,6 +114,10 @@ export const testConfig = (overrides = {}) => ({
   maxResponseBytes: 2 * 1024 * 1024,
   maxPostTextChars: 4000,
   llmMaxTokens: 2000,
+  imagesEnabled: false,
+  imageMinTextChars: 400,
+  maxImagesPerPost: 2,
+  imageMaxTokens: 4000,
   ...overrides,
 });
 
