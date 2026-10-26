@@ -9,7 +9,8 @@
     "start": "node app.js",
     "dev": "nodemon app.js",
     "seed": "node scripts/seed.js",
-    "ingest": "node scripts/ingest.js"
+    "ingest": "node scripts/ingest.js",
+    "backfill:sections": "node scripts/backfill-sections.js"
   },
   "repository": {
     "type": "git",

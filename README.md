@@ -104,10 +104,19 @@ frontend, with the differences called out below):
   "qualification": "B.Sc / HND",
   "description": "...",
   "responsibilities": ["..."],
+  "aboutCompany": "",
+  "requirements": [],
+  "benefits": [],
   "applicationLink": "https://flutterwave.com/careers/123",
   "saved": false
 }
 ```
+
+`aboutCompany` (string, max 2000), `requirements` and `benefits` (arrays of
+strings, max 20 items of 500 chars each) are optional plain-text sections, modelled
+like `responsibilities`. They are `""` / `[]` when a job has none, are never
+required to approve or publish, and can be set by the owner (`POST`/`PATCH
+/api/jobs`) or by an admin (approve `edits`). HTML tags are stripped.
 
 `companySlug` is derived from `company` with the same slug function
 `Company.slug` uses (see Companies below) — it lets the frontend link a job
@@ -280,21 +289,27 @@ Behaviour changes for existing consumers:
 ## Admin API — `/api/admin`
 
 All routes require `Authorization: Bearer <jwt>` of a user with `role: "admin"`
-(`401` without a token, `403` for other users).
+or `role: "superadmin"` (`401` without a token, `403` for other users). A
+superadmin can do everything an admin can; the role is read from the database on
+every request. Nobody can obtain either role through the API (register and every
+other endpoint ignore a `role` in the body): roles are set directly in the
+database.
 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/jobs` | `?reviewStatus=pending_review`, `published` or `rejected` (default `pending_review`; other values `400 INVALID_REVIEW_STATUS`), `?channel=`, `page`, `limit` (max 50). `published` includes legacy jobs. |
 | GET | `/jobs/:id` | Full admin view (`reviewStatus`, `review`, `source`, `extraction`, apply fields) plus `rawPost` (the original Telegram text; `null` once purged after 90 days). |
-| POST | `/jobs/:id/approve` | Body `{ expectedUpdatedAt, edits?, status? }`; `expectedUpdatedAt` is **required** (send the `updatedAt` from `GET /jobs/:id`, the version you reviewed), otherwise `400 EXPECTED_UPDATED_AT_REQUIRED` and nothing is written. `edits` may only contain: title, company, domain, location, employmentType, workArrangement, salaryMin, salaryMax, salaryCurrency, salaryPeriod, category, skills, industry, experience, qualification, description, responsibilities, applicationLink, applyEmail, applyPhone. `status` sets the badges (e.g. `["verified"]`). To publish, the merged job needs title, description, company, location, category and at least one of applicationLink / applyEmail / applyPhone, otherwise `400 MISSING_FIELDS` with `missing: [...]` (`applyContact` stands for the three apply fields). Other schema problems: `400 VALIDATION_ERROR` with `fields`. Atomic: `409 NOT_PENDING` if the job is no longer pending, `409 STALE` if it changed after the version you reviewed (`expectedUpdatedAt`) or the value is not a valid date. |
+| POST | `/jobs/:id/approve` | Body `{ expectedUpdatedAt, edits?, status? }`; `expectedUpdatedAt` is **required** (send the `updatedAt` from `GET /jobs/:id`, the version you reviewed), otherwise `400 EXPECTED_UPDATED_AT_REQUIRED` and nothing is written. `edits` may only contain: title, company, domain, location, employmentType, workArrangement, salaryMin, salaryMax, salaryCurrency, salaryPeriod, category, skills, industry, experience, qualification, description, responsibilities, aboutCompany, requirements, benefits, applicationLink, applyEmail, applyPhone. If the job still has no `domain` after the edits it is filled from the apply link or apply email when that points at the employer (see Company domain below); a domain that is set is never replaced. `status` sets the badges (e.g. `["verified"]`). To publish, the merged job needs title, description, company, location, category and at least one of applicationLink / applyEmail / applyPhone, otherwise `400 MISSING_FIELDS` with `missing: [...]` (`applyContact` stands for the three apply fields). Other schema problems: `400 VALIDATION_ERROR` with `fields`. Atomic: `409 NOT_PENDING` if the job is no longer pending, `409 STALE` if it changed after the version you reviewed (`expectedUpdatedAt`) or the value is not a valid date. |
 | POST | `/jobs/:id/reject` | Body `{ reason? }` (max 500 chars). `409 NOT_PENDING` if not pending. |
+| POST | `/jobs/:id/restore` | **Superadmin only** (`403 FORBIDDEN_ROLE` for a plain admin). Body `{ expectedUpdatedAt }`, **required** like approve (send the `updatedAt` from `GET /jobs/:id`; missing or `null` is `400 EXPECTED_UPDATED_AT_REQUIRED`, nothing is read or written). Moves a `rejected` or `published` job back to `pending_review` and returns `{ message, job }` (admin view, new `updatedAt`). `404` for a bad or unknown id, `409 NOT_RESTORABLE` when the job is already pending, `409 STALE` when the job changed after that version (or the value is not a valid date). Atomic on the current status and version. Review data is kept (reviewer, time, rejection reason); the restore is recorded in `review.restoredAt` / `review.restoredFromStatus` (the restoring user's id is stored but not exposed). A restored published job is hidden from the public until approved again. |
 | POST | `/jobs/bulk-reject` | Body `{ ids: [1..100 ids], reason? }` → `{ rejected: n }`; only pending jobs are rejected. |
 | GET | `/telegram-channels` | Channels with poll stats and `jobCounts` per review status. |
 | POST | `/telegram-channels` | Body `{ username, kind? }` (`@name`, `name` or a `t.me/name` link; 5–32 chars `a-z 0-9 _`, starting with a letter). `kind`: `board` (one post ≈ one vacancy) or `authored` (a post may bundle several). `409 DUPLICATE_CHANNEL`. |
 | PATCH | `/telegram-channels/:id` | Only `active` and `kind`. Re-activating also resets the failure counter. There is no delete — deactivate instead. |
 
-There is no un-publish endpoint yet: a published job is taken down with
-`DELETE /api/jobs/:id`. Approve/reject/bulk actions log one audit line with
+Un-publishing: a superadmin can send a published job back to review with
+`/jobs/:id/restore`; `DELETE /api/jobs/:id` removes it for good. Approve/reject/
+restore/bulk actions log one audit line with
 ids only (`[admin-audit] action=... admin=... job=...`).
 
 ## Telegram ingestion
@@ -312,6 +327,56 @@ the post; tracking parameters stripped; red flags and link class are computed in
 code, never taken from the model) → de-duplicate (title + company + location) →
 save as a `pending_review` job. Nothing is published automatically; an admin
 approves or rejects (see the Admin API).
+
+The extractor also fills the optional `aboutCompany`, `requirements` and
+`benefits` sections, but only from text the post itself contains (headings such
+as Requirements / Benefits / About us). In code, each item must be present in the
+post text (as a phrase, or at least 60% of its significant words) or it is dropped
+and the field is listed in `extraction.droppedFields`; an item that contains a
+link, a `www.` address, an email address or a number of 7+ digits is also dropped
+unless that exact value appears in the post; lengths and counts are
+capped. Blank items are discarded by the Job model. These sections never feed the red flags or the de-duplication key.
+
+**Company domain.** The frontend shows logos from `domain`. Ingested jobs get it
+from `deriveCompanyDomain` (`src/utils/companyDomain.js`). A post can carry any
+link, so the apply link's host (lowercase, no `www.`) is used only when it is
+vouched for: its main label is the company's name (same rule as the
+`company_domain` link class), or the apply email is on the same registrable
+domain. A link nothing vouches for gives no domain. Without a usable link, the
+domain of the apply email is used. It returns nothing for shared hosts
+(Telegram/WhatsApp/social links, link shorteners, form builders, job boards, ATS
+platforms, free site hosts such as github.io / vercel.app / netlify.app /
+wordpress.com, Google/Microsoft hosts and free-mail providers, plus their
+subdomains), public suffixes (co.uk, com.ng, ...), non-public names (.local,
+.internal, .test, .localhost, .example, .invalid), punycode (IDN) hosts, and
+anything that is not a plain hostname. Admin approve uses it when the job still has no domain; a domain that is
+set is never overwritten.
+
+One-time backfill for jobs ingested before these fields existed:
+
+```bash
+npm run backfill:sections                   # dry run: prints counts only
+npm run backfill:sections -- --apply --yes-db=<dbname>   # writes
+npm run backfill:sections -- --apply --yes-db=<dbname> --limit 50 --max-calls 20
+```
+
+It prints the connected database host and name right after connecting (never
+credentials) and the db name in the final JSON. `--apply` refuses to run unless
+`--yes-db=<dbname>` equals the connected database name (exit code 1, nothing
+written); a dry run needs no flag. `--max-calls N` caps the LLM calls of the run,
+and the backfill never takes the daily counter past 80% of
+`INGESTION_DAILY_LLM_CAP`, so ingestion keeps 20% of the budget.
+
+It selects `pending_review` Telegram jobs whose three sections are all empty and
+that no human has touched (`review.reviewedBy` / `review.restoredAt` unset),
+oldest first, re-extracts from the stored post (skipped when the post was
+purged), and only `$set`s `aboutCompany`, `requirements`, `benefits` and, when the
+job has no `domain`, `domain`. No other field is touched, so admin edits are never
+overwritten (the job's `updatedAt` does change, which is what makes an open review
+of an older version fail with `STALE` instead of publishing unseen text). It
+shares the daily LLM counter with ingestion and stops cleanly when its limit is
+reached; the dry run makes no LLM calls. Re-running is safe; jobs whose posts have no such
+sections stay empty and are looked at again, so use `--limit`.
 
 Run it once (cron-style, then exit):
 
@@ -367,7 +432,7 @@ To call protected endpoints:
 1. Log in: open `POST /api/auth/login`, click **Try it out**, enter email and password, **Execute**.
 2. Copy the `token` from the response.
 3. Click **Authorize** (top right), paste the token (without `Bearer`) and confirm.
-4. **Try it out** on any padlock endpoint; the token is sent automatically (it lasts 7 days by default). Admin endpoints need an account with role `admin`.
+4. **Try it out** on any padlock endpoint; the token is sent automatically (it lasts 7 days by default). Admin endpoints need an account with role `admin` or `superadmin` (restoring a job needs `superadmin`).
 
 ## Error responses and hardening
 

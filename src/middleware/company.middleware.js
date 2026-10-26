@@ -1,4 +1,5 @@
 import Company from "../models/company.model.js";
+import { isAdminRole } from "../utils/roles.js";
 
 export const loadCompanyBySlug = async (req, res, next) => {
   try {
@@ -18,7 +19,7 @@ export const loadCompanyBySlug = async (req, res, next) => {
 };
 
 export const requireAdmin = (req, res, next) => {
-  if (req.user.role !== "admin") {
+  if (!isAdminRole(req.user.role)) {
     return res.status(403).json({
       message: "Only an admin can modify company profiles.",
     });

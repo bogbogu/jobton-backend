@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import Freelancer from "../models/freelancer.model.js";
+import { isAdminRole } from "../utils/roles.js";
 
 export const loadFreelancer = async (req, res, next) => {
   try {
@@ -26,7 +27,7 @@ export const loadFreelancer = async (req, res, next) => {
 
 export const requireFreelancerOwner = (req, res, next) => {
   const isOwner = req.freelancer.user && req.freelancer.user.toString() === req.user._id.toString();
-  const isAdmin = req.user.role === "admin";
+  const isAdmin = isAdminRole(req.user.role);
 
   if (!isOwner && !isAdmin) {
     return res.status(403).json({

@@ -5,6 +5,7 @@ import { formatSalaryDisplay, formatRelativeDate, formatLongDate } from "../util
 import { slugify } from "../utils/slugify.utils.js";
 import { publicJobFilter, isPublishedJob } from "../utils/jobVisibility.js";
 import { isInputError, validationErrorBody } from "../utils/errors.utils.js";
+import { isAdminRole } from "../utils/roles.js";
 
 const DEFAULT_PAGE_SIZE = 12;
 const MAX_PAGE_SIZE = 50;
@@ -44,6 +45,9 @@ export const serializeJob = (job, { saved = false } = {}) => ({
   qualification: job.qualification,
   description: job.description,
   responsibilities: job.responsibilities,
+  aboutCompany: job.aboutCompany ?? "",
+  requirements: job.requirements ?? [],
+  benefits: job.benefits ?? [],
   applicationLink: job.applicationLink || null,
   applyEmail: job.applyEmail || null,
   applyPhone: job.applyPhone || null,
@@ -212,10 +216,13 @@ export const createJob = async (req, res) => {
       qualification,
       description,
       responsibilities,
+      aboutCompany,
+      requirements,
+      benefits,
       applicationLink,
     } = req.body || {};
 
-    const isAdmin = req.user.role === "admin";
+    const isAdmin = isAdminRole(req.user.role);
 
     if (
       !title ||
@@ -254,6 +261,9 @@ export const createJob = async (req, res) => {
       qualification,
       description,
       responsibilities,
+      aboutCompany,
+      requirements,
+      benefits,
       applicationLink,
       postedBy: req.user._id,
       reviewStatus: isAdmin ? "published" : "pending_review",
@@ -297,6 +307,9 @@ const UPDATABLE_JOB_FIELDS = [
   "qualification",
   "description",
   "responsibilities",
+  "aboutCompany",
+  "requirements",
+  "benefits",
   "applicationLink",
 ];
 
@@ -306,7 +319,7 @@ const ADMIN_ONLY_JOB_FIELDS = ["status"];
 export const updateJob = async (req, res) => {
   try {
     const job = req.job;
-    const isAdmin = req.user.role === "admin";
+    const isAdmin = isAdminRole(req.user.role);
     const fields = isAdmin ? [...UPDATABLE_JOB_FIELDS, ...ADMIN_ONLY_JOB_FIELDS] : UPDATABLE_JOB_FIELDS;
 
     for (const field of fields) {
