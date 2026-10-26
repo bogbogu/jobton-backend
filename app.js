@@ -14,6 +14,7 @@ import jobRoutes from "./src/routes/job.route.js";
 import freelancerRoutes from "./src/routes/freelancer.routes.js";
 import companyRoutes from "./src/routes/company.routes.js";
 import newsletterRoutes from "./src/routes/newsletter.routes.js";
+import contactRoutes from "./src/routes/contact.routes.js";
 import adminRoutes from "./src/routes/admin.routes.js";
 import docsRoutes from "./src/routes/docs.routes.js";
 import noStore from "./src/middleware/cacheControl.middleware.js";
@@ -66,7 +67,7 @@ app.use(express.json({ limit: BODY_LIMIT }));
 app.use(express.urlencoded({ extended: false, limit: BODY_LIMIT }));
 
 // Account, session and contact data: never cached by browsers or proxies.
-app.use(["/api/auth", "/api/freelancers", "/api/admin"], noStore);
+app.use(["/api/auth", "/api/freelancers", "/api/admin", "/api/contact"], noStore);
 
 const emailConfigValidation = validateEmailConfig();
 
@@ -106,6 +107,7 @@ app.use("/api/jobs", jobRoutes);
 app.use("/api/freelancers", freelancerRoutes);
 app.use("/api/companies", companyRoutes);
 app.use("/api/newsletter", newsletterRoutes);
+app.use("/api/contact", contactRoutes);
 app.use("/api/admin", adminRoutes);
 
 // Swagger UI (/api-docs) and the raw spec (/api-docs.json). Off unless explicitly
