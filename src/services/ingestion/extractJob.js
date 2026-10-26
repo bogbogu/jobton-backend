@@ -452,7 +452,7 @@ function extractionError(message, usage) {
 //   client: an Anthropic client (or anything with messages.parse)
 // Returns { jobs, isJobPost, notJobReason, modelNotes, usage: { input, output } }
 // Throws a short-message Error on refusal, API failure or unparsable output.
-export async function extractJobsFromPost({ text, links = [], client, model, maxTokens = 2000 } = {}) {
+export async function extractJobsFromPost({ text, links = [], client, model, maxTokens = 6000 } = {}) {
   if (!client?.messages?.parse) throw extractionError("No LLM client configured.");
 
   let response;
@@ -465,8 +465,12 @@ export async function extractJobsFromPost({ text, links = [], client, model, max
       output_config: { effort: "low", format: getOutputFormat() },
     });
   } catch (error) {
-    const status = Number.isInteger(error?.status) ? ` (status ${error.status})` : "";
-    throw extractionError(`LLM request failed${status}.`);
+    const hasStatus = Number.isInteger(error?.status);
+    // The SDK raises a status-less error when the reply is cut off at max_tokens
+    // or is not valid JSON; say so, because a long multi-vacancy post hits this.
+    const unreadable = !hasStatus && /Failed to parse structured output/i.test(String(error?.message ?? ""));
+    const detail = hasStatus ? ` (status ${error.status})` : unreadable ? " (unreadable output)" : "";
+    throw extractionError(`LLM request failed${detail}.`);
   }
 
   const usage = {
