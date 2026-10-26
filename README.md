@@ -232,6 +232,48 @@ collection (`email`, unique) being populated for future use.
 Shape matches `src/types/freelancer-type.ts` exactly except `id` is a string,
 not a number — same frontend change needed as for jobs.
 
+### Contact — `/api/contact`
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| POST | `/` | — | `{ name, email, subject, message, reference_code }` → `201 { message: "Message received." }` |
+
+Backs the public Contact form. Every field must be a string (otherwise
+`400 INVALID_INPUT`). Values are trimmed and cleaned, then checked (the limits
+live in `CONTACT_LIMITS` in `src/utils/contact.utils.js`; the frontend shows the same numbers):
+
+| Field | Rule |
+|---|---|
+| `name` | 1-80 characters. Control characters and CR/LF removed, whitespace collapsed |
+| `email` | valid address, at most 254 characters, lower-cased. Printable ASCII only: non-ASCII local parts, internationalised domains and invisible/bidi characters are refused |
+| `subject` | 1-120 characters. Same cleaning as `name` |
+| `message` | 1-2000 characters after cleaning. Plain text: line breaks kept, HTML tags and control characters removed |
+
+A failure is `400 { message, error: "VALIDATION_ERROR", fields: { name: "..." } }` with
+short fixed messages (the submitted values are never echoed). A name or subject longer than 20,000 raw characters is refused (the same "too long" message), not cut.
+
+- **Honeypot.** `reference_code` is a hidden input people never fill in (not named `website`, which browsers and password managers autofill). If it has any content
+  the API answers with the same `201` and does not save or send anything.
+- **Rate limits** (in memory, per server process, reset on restart): 5 requests per hour
+  per visitor IP (`429 { message, error: "RATE_LIMITED" }`; set `TRUST_PROXY_HOPS=3` on Render
+  (measured: Render's own connection, its internal proxy and Cloudflare's edge) so `req.ip` is the
+  real visitor), and 3 messages per hour per email address.
+- **Global flood cap.** Across all visitors, once 60 messages (`CONTACT_GLOBAL_PER_HOUR`) were saved in the
+  last hour, further messages are still saved (`emailStatus: skipped`) and answered with `201`, but no
+  email is sent and one log line (no content) is written. This protects the Resend quota shared with the
+  verification and password-reset emails.
+- **Saved copy.** The message is stored first in `ContactMessage`
+  (`name, email, subject, message, emailStatus: sent | failed | skipped, createdAt`),
+  then emailed, then `emailStatus` is updated (`skipped` = email sending is not configured, or the global flood cap was hit).
+  The IP address and user agent are not stored. A TTL index deletes each message 90 days after `createdAt`.
+- **Email.** Plain text only (`Name: ...`, `Reply-to (unverified): ...`, blank line, message; no `From: name <email>` line, and `<`, `>` and `@` are removed from the name in the body), sent from `RESEND_FROM_EMAIL` (never the visitor's address) to
+  `CONTACT_INBOX_EMAIL` (optional; a plain valid address, otherwise `info@jobton.com.ng`), with
+  Reply-To set to the visitor, subject `[Jobton contact] <subject>`, no CC/BCC. `CONTACT_INBOX_EMAIL`
+  is not part of the required email config.
+- The answer is `201` whenever the message was saved, even if the email failed (one log
+  line with the message id, no content). If saving fails: `500 { message: "Internal server error." }`.
+  The recipient address is never returned. Responses are `Cache-Control: no-store`.
+
 ### Categories — `/api/categories`
 
 `GET /` (public) → `{ message, categories: [{ title, jobCount }] }`,
@@ -446,7 +488,7 @@ To call protected endpoints:
 - Bodies are limited to 100kb (`413 PAYLOAD_TOO_LARGE`); malformed JSON is
   `400 INVALID_JSON`; unknown routes are `404 { message: "Not found.", error: "NOT_FOUND" }`.
   Unexpected errors are always `500 { message: "Internal server error." }`.
-- Responses under `/api/auth`, `/api/freelancers`, `/api/admin` and `GET /api/jobs/saved`
+- Responses under `/api/auth`, `/api/freelancers`, `/api/admin`, `/api/contact` and `GET /api/jobs/saved`
   carry `Cache-Control: no-store`.
 - The poster's user id (`postedBy`) is only visible in the admin job view.
 - JWTs are HS256 only. The server refuses to start without `JWT_SECRET`.
