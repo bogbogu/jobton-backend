@@ -17,6 +17,7 @@ vi.mock("../src/utils/email.service.js", () => ({
   validateEmailConfig: vi.fn(() => ({ isValid: true, missingVars: [], invalidVars: [] })),
   sendVerificationEmail: vi.fn(),
   sendResetPasswordEmail: vi.fn(),
+  sendContactMessageEmail: vi.fn(),
 }));
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
