@@ -378,6 +378,89 @@ shares the daily LLM counter with ingestion and stops cleanly when its limit is
 reached; the dry run makes no LLM calls. Re-running is safe; jobs whose posts have no such
 sections stay empty and are looked at again, so use `--limit`.
 
+**Reading pictures (flyers).** Some ads are only a picture. With
+`INGESTION_IMAGES_ENABLED=true`, a post that has a photo and a caption shorter
+than `INGESTION_IMAGE_MIN_TEXT_CHARS` (default 400; a long caption usually already
+holds the ad) has up to `INGESTION_MAX_IMAGES_PER_POST` photos (default 2, hard
+maximum 3) downloaded and read by the same model with a vision call that only
+**copies** the visible text. The copy is untrusted data, cleaned (no HTML, no control
+characters, at most 4000 characters), appended to the caption after a
+`[Text read from the attached image]` line, and the combined text goes through the
+unchanged flow: minimum length, `not_job` classification, extraction, the
+"must literally appear in the text" checks for links / emails / phones, and
+de-duplication (a flyer and a text post for the same vacancy hit the same
+`dedupeKey`). A non-job flyer ends as `not_job` like a text post. **Default off:**
+nothing changes until the owner enables it.
+
+- **Cost.** Each transcribed post costs one extra LLM call (two calls only when 3
+  photos are read, as a call takes at most 2 images; up to 4000 output tokens each).
+  The calls are reserved from the same atomic daily cap as extraction
+  (`INGESTION_DAILY_LLM_CAP`), and their tokens are counted in the daily usage. Before
+  downloading anything the run checks that today's cap has a call left, and stops
+  cleanly if not.
+- **The same flyer is paid for once.** Each downloaded picture is hashed (sha256; only
+  the hash is kept, never the bytes) and, once read, the post stores
+  `imageHashes` and `imageTranscript` (removed with the post by the 90-day TTL).
+  Another post with the same picture(s) reuses that text with no LLM call, and the
+  identical combined text is then caught by the normal repost / duplicate detection
+  before extraction. A retry after a transient extraction failure or a cap stop
+  reuses the stored text too: no second download, no second vision call. (Earlier
+  behaviour: a reposted flyer was transcribed again every time before it was
+  recognised as a duplicate.)
+- **Limits.** Photo URLs are taken from the preview HTML and kept (max 3 per post,
+  `TelegramPost.imageUrls`) only when they are `https`, have no credentials or custom
+  port, and the host matches `cdnN.cdn-telegram.org` or `cdnN.telesco.pe`. The same
+  check runs again before downloading. A download follows no redirect except to
+  another allow-listed https URL (max 2 hops), times out after 15 s, is aborted
+  beyond 3.5 MiB (the API accepts about 5 MB of base64), and must be `image/jpeg`, `image/png`, `image/webp` or `image/gif`
+  with matching magic bytes. Images are held in memory only: never written to disk
+  or the database. Logs carry only the post id and a short reason code.
+- **Failures.** If the picture cannot be read and the caption alone is long enough
+  (40 characters), the post continues text-only. Otherwise a transient failure
+  (timeout, 5xx, 429, LLM outage) leaves it `new` and retries it on a later run (same
+  5-attempt limit as other LLM errors); a permanent one finishes it as `skipped`
+  with `Image could not be read.` (`No readable text in image.` when the picture
+  holds no text). Failures caused by the picture itself (a refusal, unreadable
+  model output, any 4xx from the API) are permanent for the image step and do **not**
+  count towards the 5-failures-in-a-row abort of the run; only 5xx, 429 and
+  network errors / timeouts do.
+- **Safeguards (computed in code, never by the model).** A job created from a
+  transcript gets `extraction.fromImage = true`, `extraction.imageTextChars`,
+  `extraction.imageText` (the cleaned transcript itself, plain text, max 4000
+  characters, so a reviewer can check text that is tiny or hidden in the picture), and the
+  red flag `from_image` ("Read from an image. Check names, numbers and links against
+  the picture."). When its apply link, email or phone is not in the caption (so it
+  exists only in the picture) it also gets `contact_from_image` ("Contact details
+  come from an image. Check them against the picture."). These appear in
+  `extraction.redFlags` like the other flags.
+- **Admin API.** The admin job has `source.imageUrls` (the allow-listed photo URLs,
+  max 3, `[]` when none), `extraction.fromImage` (boolean) and
+  `extraction.imageText` (string, `""` when none) so a reviewer can compare the job
+  with the picture. The public job shape exposes none of them. Telegram may expire
+  the links after a while.
+- **Stored even while the flag is off.** Newly ingested posts keep their photo URLs
+  (`TelegramPost.imageUrls`) and their jobs keep `source.imageUrls` (admin-visible)
+  whether or not `INGESTION_IMAGES_ENABLED` is `true`, so enabling the feature later
+  can read them and reviewers see the pictures either way. Nothing is downloaded
+  while the flag is off.
+
+Posts that were skipped as `No text.` before this feature can be re-queued once
+(only those stored after photo URLs started being kept can be read again; older
+ones are only counted):
+
+```bash
+INGESTION_IMAGES_ENABLED=true npm run requeue:images                          # dry run: counts only
+INGESTION_IMAGES_ENABLED=true npm run requeue:images -- --apply --yes-db=<dbname>   # writes
+```
+
+Set `INGESTION_IMAGES_ENABLED=true` on the **cron service's** environment (the
+service that runs `npm run ingest`) before running `requeue:images` with
+`--apply`; otherwise the next ingest run would skip the re-queued posts again as
+`No text.`. The script refuses to run unless `INGESTION_IMAGES_ENABLED` is `true`, prints the connected
+host and database name (never credentials), and `--apply` needs `--yes-db` to equal
+the connected database name. It only resets those posts to `new`; the next
+`npm run ingest` reads them, within the daily cap.
+
 Run it once (cron-style, then exit):
 
 ```bash
@@ -401,6 +484,9 @@ Environment variables (see `.env.example`; **never commit real values**):
 | `INGESTION_MAX_PAGES_PER_CHANNEL` | `3` | Preview pages fetched per channel per run. |
 | `INGESTION_MAX_PENDING_PER_CHANNEL` | `200` | A channel with this many pending jobs is paused until reviewed. |
 | `INGESTION_FETCH_DELAY_MS` | `2000` | Pause between requests to t.me. |
+| `INGESTION_IMAGES_ENABLED` | `false` | Read the text on post pictures (see above). Only the exact value `true` enables it. |
+| `INGESTION_IMAGE_MIN_TEXT_CHARS` | `400` | Only posts with a caption shorter than this are read. A set-but-invalid value counts as `0` (never read). |
+| `INGESTION_MAX_IMAGES_PER_POST` | `2` | Pictures read per post, 1 to 3 (hard maximum 3). |
 
 Operational notes:
 

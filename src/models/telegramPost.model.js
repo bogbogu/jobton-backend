@@ -1,4 +1,9 @@
 import mongoose from "mongoose";
+import {
+  MAX_IMAGE_URLS_PER_POST,
+  MAX_IMAGE_URL_CHARS,
+  isAllowedTelegramImageUrl,
+} from "../utils/telegramImageUrl.js";
 
 export const TELEGRAM_POST_STATUSES = [
   "new", // stored, not processed yet
@@ -11,7 +16,9 @@ export const TELEGRAM_POST_STATUSES = [
 
 // Raw posts are kept only for a bounded time: they contain recruiters' phone
 // numbers/emails (personal data under Nigeria's NDPR). A TTL index deletes
-// them after RETENTION_DAYS; the Job keeps only the extracted fields.
+// them after RETENTION_DAYS; the Job keeps only the extracted fields (and the
+// allow-listed photo URLs, see `source.imageUrls`). Images themselves are never
+// stored, and the URLs kept here are plain Telegram CDN links.
 export const TELEGRAM_POST_RETENTION_DAYS = 90;
 
 const TelegramPostSchema = new mongoose.Schema(
@@ -23,6 +30,33 @@ const TelegramPostSchema = new mongoose.Schema(
     // Plain text, already cleaned of HTML/control chars and capped.
     text: { type: String, default: "", maxlength: 4000 },
     hasImage: { type: Boolean, default: false },
+
+    // https URLs of the post's photos on Telegram's CDN (at most 3). Anything
+    // that is not on the allow-list is rejected by the schema, so a stored URL is
+    // always safe to fetch. Posts stored before this field existed have none.
+    imageUrls: {
+      type: [{ type: String, maxlength: MAX_IMAGE_URL_CHARS }],
+      default: [],
+      validate: [
+        {
+          validator: (urls) => urls.length <= MAX_IMAGE_URLS_PER_POST,
+          message: "A post keeps at most " + MAX_IMAGE_URLS_PER_POST + " image URLs.",
+        },
+        {
+          validator: (urls) => urls.every(isAllowedTelegramImageUrl),
+          message: "Image URLs must be https URLs on Telegram's CDN.",
+        },
+      ],
+    },
+
+    // Set once the picture(s) of this post were read. `imageHashes` are sha256 of
+    // the downloaded bytes (the bytes themselves are never stored) so the same
+    // flyer in another post is not paid for twice; `imageTranscript` is the
+    // cleaned text the model copied from them ("" = nothing readable), kept so a
+    // retried post does not download and transcribe again. Both go with the post
+    // when its TTL expires.
+    imageHashes: { type: [{ type: String, match: /^[0-9a-f]{64}$/ }], default: undefined, index: { sparse: true } },
+    imageTranscript: { type: String, maxlength: 4000, default: undefined },
 
     // href values found in the post's anchors (used to cross-check links the LLM returns).
     links: {
