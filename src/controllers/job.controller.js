@@ -10,11 +10,15 @@ import { isAdminRole } from "../utils/roles.js";
 const DEFAULT_PAGE_SIZE = 12;
 const MAX_PAGE_SIZE = 50;
 
+// Every sort ends in _id: many jobs share a createdAt (a bulk ingestion run),
+// applicants (mostly 0) or a salary, and without a unique last key the database
+// may order ties differently from one request to the next, so skip/limit paging
+// could repeat a job on two pages or skip one.
 const SORT_MAP = {
-  MOST_RECENT: { createdAt: -1 },
-  OLDEST: { createdAt: 1 },
-  HIGHEST_SALARY: { salaryMax: -1, salaryMin: -1 },
-  MOST_APPLICANTS: { applicants: -1 },
+  MOST_RECENT: { createdAt: -1, _id: -1 },
+  OLDEST: { createdAt: 1, _id: 1 },
+  HIGHEST_SALARY: { salaryMax: -1, salaryMin: -1, createdAt: -1, _id: -1 },
+  MOST_APPLICANTS: { applicants: -1, createdAt: -1, _id: -1 },
 };
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
