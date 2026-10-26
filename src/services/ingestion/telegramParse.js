@@ -1,5 +1,12 @@
 import * as cheerio from "cheerio";
 import { cleanText, isSafeHttpUrl } from "../../utils/validators.utils.js";
+import {
+  MAX_IMAGE_URLS_PER_POST,
+  isAllowedTelegramImageUrl,
+  normalizeTelegramImageUrl,
+} from "../../utils/telegramImageUrl.js";
+
+export { isAllowedTelegramImageUrl };
 
 const MAX_TEXT_CHARS = 4000;
 const MAX_LINKS = 10;
@@ -74,6 +81,32 @@ function normalizeText(raw) {
   return cleanText(tidy).slice(0, MAX_TEXT_CHARS).trim();
 }
 
+// The photo of a message is the background image of its photo wrap:
+//   style="width:800px;background-image:url('https://cdn4.telesco.pe/file/x.jpg')"
+// One alternative per quoting style; none of them can backtrack into another.
+const BACKGROUND_URL = /url\(\s*(?:'([^']*)'|"([^"]*)"|([^)\s'"]*))\s*\)/i;
+const MAX_STYLE_CHARS = 3000;
+
+// Allowed photo URLs of one message (at most MAX_IMAGE_URLS_PER_POST, in page
+// order, unique). The wrap's style is untrusted: only https URLs on Telegram's
+// CDN hosts survive. The thumbnail of a quoted (replied-to) message is not
+// this post's picture.
+function photoUrls(wrap, $) {
+  const urls = [];
+  wrap.find(".tgme_widget_message_photo_wrap").each((_, element) => {
+    if (urls.length >= MAX_IMAGE_URLS_PER_POST) return;
+    if ($(element).closest(".tgme_widget_message_reply").length > 0) return;
+
+    const style = String($(element).attr("style") || "").slice(0, MAX_STYLE_CHARS);
+    const match = BACKGROUND_URL.exec(style);
+    if (!match) return;
+
+    const href = normalizeTelegramImageUrl((match[1] ?? match[2] ?? match[3] ?? "").trim());
+    if (href && !urls.includes(href)) urls.push(href);
+  });
+  return urls;
+}
+
 // Parses the HTML of https://t.me/s/<username> into plain data. Uses a real
 // HTML parser; posts are untrusted input and are never interpreted as markup.
 export function parseChannelHtml(html, username) {
@@ -115,6 +148,7 @@ export function parseChannelHtml(html, username) {
       text,
       links: text ? links : [],
       hasImage: wrap.find(".tgme_widget_message_photo_wrap").length > 0,
+      imageUrls: photoUrls(wrap, $),
     });
   });
 

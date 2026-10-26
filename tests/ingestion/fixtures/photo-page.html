@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<body>
+<main class="tgme_channel_history">
+  <!-- 101: an album of four photos; the 4th must be dropped (max 3), one host is hostile -->
+  <div class="tgme_widget_message_wrap js-widget_message_wrap">
+    <div class="tgme_widget_message js-widget_message" data-post="flyers_ng/101">
+      <div class="tgme_widget_message_bubble">
+        <div class="tgme_widget_message_grouped_wrap">
+          <a class="tgme_widget_message_photo_wrap grouped_media_wrap" href="https://t.me/flyers_ng/101" style="width:400px;background-image:url('https://cdn4.telesco.pe/file/one.jpg')"></a>
+          <a class="tgme_widget_message_photo_wrap grouped_media_wrap" href="https://t.me/flyers_ng/102" style="background-image:url(&quot;https://CDN1.cdn-telegram.org/file/two.jpg?x=1&quot;)"></a>
+          <a class="tgme_widget_message_photo_wrap grouped_media_wrap" href="https://t.me/flyers_ng/103" style="background-image:url(https://cdn2.telesco.pe/file/three.jpg)"></a>
+          <a class="tgme_widget_message_photo_wrap grouped_media_wrap" href="https://t.me/flyers_ng/104" style="background-image:url('https://cdn5.telesco.pe/file/four.jpg')"></a>
+        </div>
+        <div class="tgme_widget_message_text js-message_text" dir="auto">Hiring now. See the flyer.</div>
+        <div class="tgme_widget_message_footer"><span class="tgme_widget_message_meta"><a class="tgme_widget_message_date" href="https://t.me/flyers_ng/101"><time datetime="2026-10-01T08:00:00+00:00">x</time></a></span></div>
+      </div>
+    </div>
+  </div>
+  <!-- 110: hostile and malformed photo URLs only -->
+  <div class="tgme_widget_message_wrap js-widget_message_wrap">
+    <div class="tgme_widget_message js-widget_message" data-post="flyers_ng/110">
+      <div class="tgme_widget_message_bubble">
+        <a class="tgme_widget_message_photo_wrap" href="#" style="background-image:url('https://cdn1.telesco.pe.evil.example/file/a.jpg')"></a>
+        <a class="tgme_widget_message_photo_wrap" href="#" style="background-image:url('http://cdn1.telesco.pe/file/b.jpg')"></a>
+        <a class="tgme_widget_message_photo_wrap" href="#" style="background-image:url('data:image/png;base64,AAAA')"></a>
+        <a class="tgme_widget_message_photo_wrap" href="#" style="width:10px"></a>
+        <div class="tgme_widget_message_footer"><span class="tgme_widget_message_meta"><a class="tgme_widget_message_date" href="https://t.me/flyers_ng/110"><time datetime="2026-10-01T09:00:00+00:00">x</time></a></span></div>
+      </div>
+    </div>
+  </div>
+  <!-- 120: the photo belongs to the quoted message, not to this post -->
+  <div class="tgme_widget_message_wrap js-widget_message_wrap">
+    <div class="tgme_widget_message js-widget_message" data-post="flyers_ng/120">
+      <div class="tgme_widget_message_bubble">
+        <a class="tgme_widget_message_reply" href="https://t.me/flyers_ng/101">
+          <i class="tgme_widget_message_photo_wrap" style="background-image:url('https://cdn4.telesco.pe/file/quoted.jpg')"></i>
+        </a>
+        <div class="tgme_widget_message_text js-message_text" dir="auto">Replying with plain text only.</div>
+        <div class="tgme_widget_message_footer"><span class="tgme_widget_message_meta"><a class="tgme_widget_message_date" href="https://t.me/flyers_ng/120"><time datetime="2026-10-01T10:00:00+00:00">x</time></a></span></div>
+      </div>
+    </div>
+  </div>
+  <!-- 130: no photo -->
+  <div class="tgme_widget_message_wrap js-widget_message_wrap">
+    <div class="tgme_widget_message js-widget_message" data-post="flyers_ng/130">
+      <div class="tgme_widget_message_bubble">
+        <div class="tgme_widget_message_text js-message_text" dir="auto">Just text.</div>
+        <div class="tgme_widget_message_footer"><span class="tgme_widget_message_meta"><a class="tgme_widget_message_date" href="https://t.me/flyers_ng/130"><time datetime="2026-10-01T11:00:00+00:00">x</time></a></span></div>
+      </div>
+    </div>
+  </div>
+</main>
+</body>
+</html>

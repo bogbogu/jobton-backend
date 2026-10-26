@@ -1,6 +1,11 @@
 import mongoose from "mongoose";
 import { REVIEW_STATUSES } from "../utils/jobVisibility.js";
 import {
+  MAX_IMAGE_URLS_PER_POST,
+  MAX_IMAGE_URL_CHARS,
+  isAllowedTelegramImageUrl,
+} from "../utils/telegramImageUrl.js";
+import {
   LINK_CLASSES,
   cleanText,
   isSafeHttpUrl,
@@ -266,6 +271,22 @@ const JobSchema = new mongoose.Schema(
       messageId: { type: Number, default: undefined },
       url: { type: String, default: undefined, validate: urlValidator },
       postedAt: { type: Date, default: undefined },
+      // Telegram CDN photo URLs of the source post (admin view only; the public
+      // serializer never exposes them). Allow-listed by the schema.
+      imageUrls: {
+        type: [{ type: String, maxlength: MAX_IMAGE_URL_CHARS }],
+        default: undefined,
+        validate: [
+          {
+            validator: (urls) => urls.length <= MAX_IMAGE_URLS_PER_POST,
+            message: "At most " + MAX_IMAGE_URLS_PER_POST + " image URLs.",
+          },
+          {
+            validator: (urls) => urls.every(isAllowedTelegramImageUrl),
+            message: "Image URLs must be https URLs on Telegram's CDN.",
+          },
+        ],
+      },
     },
 
     // What the extractor produced and what the code checked. `redFlags`,
@@ -279,6 +300,13 @@ const JobSchema = new mongoose.Schema(
       linkClass: { type: String, enum: LINK_CLASSES, default: undefined },
       missing: { type: [String], default: undefined },
       droppedFields: { type: [String], default: undefined },
+      // Set in code (never by the model) when the text given to the extractor
+      // included a transcript of the post's image, and how long that transcript was.
+      fromImage: { type: Boolean, default: undefined },
+      imageTextChars: { type: Number, min: 0, default: undefined },
+      // The transcript itself (plain text), so a reviewer can check text that is
+      // tiny or hidden in the picture. Admin view only.
+      imageText: { type: String, maxlength: 4000, default: undefined },
       post: { type: mongoose.Schema.Types.ObjectId, ref: "TelegramPost", default: undefined },
     },
 
