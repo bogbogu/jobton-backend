@@ -15,6 +15,28 @@ const SALARY_PERIODS = ["hour", "month", "year", null];
 const WORK_ARRANGEMENTS = ["On-site", "Remote", "Hybrid"];
 const SOURCE_KINDS = ["telegram"];
 
+// Optional free-text sections of a job. Plain text only (cleanText).
+export const JOB_SECTION_LIMITS = Object.freeze({
+  aboutCompany: 2000,
+  listItems: 20, // requirements / benefits: items per job
+  listItem: 500, // requirements / benefits: characters per item
+});
+
+// Strings that are blank once cleaned ("", "   ", "<b></b>") are dropped before
+// the count check. Non-strings are kept so the cast still rejects them.
+const dropBlankItems = (value) =>
+  Array.isArray(value) ? value.filter((item) => typeof item !== "string" || cleanText(item) !== "") : value;
+
+const sectionListField = () => ({
+  type: [{ type: String, trim: true, set: cleanText, maxlength: JOB_SECTION_LIMITS.listItem }],
+  default: [],
+  set: dropBlankItems,
+  validate: {
+    validator: (value) => !Array.isArray(value) || value.length <= JOB_SECTION_LIMITS.listItems,
+    message: `{PATH} can have at most ${JOB_SECTION_LIMITS.listItems} items.`,
+  },
+});
+
 // Jobs that come from an ingestion source (source.kind set) are often
 // incomplete; they wait in review until an admin fills the gaps. Jobs posted
 // directly through the API keep the original required fields.
@@ -159,6 +181,13 @@ const JobSchema = new mongoose.Schema(
       default: [],
     },
 
+    // Optional sections. Never required to approve or publish.
+    aboutCompany: textField({ default: "", maxlength: JOB_SECTION_LIMITS.aboutCompany }),
+
+    requirements: sectionListField(),
+
+    benefits: sectionListField(),
+
     // A URL to apply at. http(s) only — it is rendered as an <a href> by the
     // frontend, so javascript:/data: schemes must never be storable.
     // Ingested jobs may instead (or additionally) carry applyEmail/applyPhone.
@@ -223,6 +252,11 @@ const JobSchema = new mongoose.Schema(
       reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: undefined },
       reviewedAt: { type: Date, default: undefined },
       rejectionReason: { type: String, maxlength: 500, default: undefined },
+      // Set when a superadmin sends a rejected/published job back to review.
+      // The earlier review data above is kept as the audit trail.
+      restoredBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: undefined },
+      restoredAt: { type: Date, default: undefined },
+      restoredFromStatus: { type: String, enum: ["rejected", "published"], default: undefined },
     },
 
     // ---- Provenance (set by the ingestion pipeline only, never by users) --

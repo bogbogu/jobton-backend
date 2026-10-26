@@ -405,6 +405,8 @@ describe("spec vs code", () => {
 
     for (const code of [
       "NOT_PENDING",
+      "NOT_RESTORABLE",
+      "FORBIDDEN_ROLE",
       "STALE",
       "MISSING_FIELDS",
       "VALIDATION_ERROR",

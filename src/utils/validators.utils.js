@@ -27,6 +27,8 @@ const TEXT_FORBIDDEN_CHARS =
 
 // A tag cannot contain "<" or ">": each "<" scans at most to the next "<",
 // so the whole pass is linear (the old "[^>]*" form was quadratic on "<a<a<a...").
+const ANGLE_BRACKETS = /[<>]/g;
+
 const HTML_TAG = /<\/?[a-zA-Z!][^<>]*>/g;
 
 // Only plain http(s) URLs to a real host. Rejects javascript:, data:,
@@ -130,13 +132,30 @@ export const isValidStoredPhone = (value) =>
 // control characters, zero-width and bidi-override characters. The frontend
 // renders these as text, but this keeps stored data clean as defense in depth.
 // Only the first MAX_CLEAN_TEXT_INPUT characters are looked at.
+//
+// Idempotent: removing a tag (or an invisible character) can join the pieces
+// around it into a NEW tag ("<<b>script>" -> "<script>", "<[zero-width]script>" ->
+// "<script>"), so the pass repeats until the text stops changing (at most
+// MAX_CLEAN_PASSES). If any pass changed something, leftover "<" and ">" are
+// removed too; text that needed no cleaning keeps its "<" / ">" ("x < y").
+const MAX_CLEAN_PASSES = 5;
+
 export const cleanText = (value) => {
   if (typeof value !== "string") return value;
-  return value
-    .slice(0, MAX_CLEAN_TEXT_INPUT)
-    .replace(HTML_TAG, "")
-    .replace(TEXT_FORBIDDEN_CHARS, "")
-    .trim();
+
+  let text = value.slice(0, MAX_CLEAN_TEXT_INPUT);
+  let changed = false;
+
+  for (let pass = 0; pass < MAX_CLEAN_PASSES; pass += 1) {
+    const next = text.replace(HTML_TAG, "").replace(TEXT_FORBIDDEN_CHARS, "");
+    if (next === text) break;
+    text = next;
+    changed = true;
+  }
+
+  if (changed) text = text.replace(ANGLE_BRACKETS, "");
+
+  return text.trim();
 };
 
 const TRACKING_PARAM = /^(utm_.*|_ga.*|_gl|fbclid|gclid|mc_.*|igshid|ref|source|trk)$/i;
@@ -186,21 +205,36 @@ const COMPANY_HOST_SUFFIXES = ["careers", "jobs", "hr", "recruit", "recruitment"
 
 // The "main" label of the registrable domain: acme in careers.acme.com and in
 // acme.co.uk. Null when the host has no registrable domain (e.g. "co.uk").
-const mainDomainLabel = (host) => {
-  const labels = host.split(".");
+// The registrable domain of a host: careers.acme.com -> acme.com,
+// jobs.acme.co.uk -> acme.co.uk. Null when the host has none (e.g. "co.uk").
+export const registrableDomain = (host) => {
+  const labels = String(host).split(".");
   if (labels.length < 2) return null;
   const last = labels[labels.length - 1];
   const second = labels[labels.length - 2];
   const suffixLabels = labels.length >= 3 && last.length === 2 && SECOND_LEVEL_LABELS.has(second) ? 2 : 1;
   const index = labels.length - 1 - suffixLabels;
-  return index >= 0 ? labels[index] : null;
+  return index >= 0 ? labels.slice(index).join(".") : null;
 };
+
+const mainDomainLabel = (host) => registrableDomain(host)?.split(".")[0] ?? null;
 
 const companyToken = (company) =>
   String(company)
     .toLowerCase()
     .replace(/\b(ltd|limited|plc|inc|group|technologies|nigeria|the|co)\b/g, "")
     .replace(/[^a-z0-9]/g, "");
+
+// True when the host's main label is the company's name: "acme" or "acme-corp"
+// for "Acme Corp"; "acmecareers"/"acmejobs"/... as written (hyphenated
+// look-alikes such as "acme-jobs" do not qualify).
+export const hostMatchesCompany = (host, company) => {
+  if (!company) return false;
+  const token = companyToken(company);
+  const main = mainDomainLabel(host);
+  if (token.length < 3 || !main) return false;
+  return main.replace(/-/g, "") === token || COMPANY_HOST_SUFFIXES.some((suffix) => main === `${token}${suffix}`);
+};
 
 // Classifies where an apply link points, from the URL STRING only (never
 // fetches it). A verification SIGNAL, not a verdict:
@@ -220,18 +254,7 @@ export const classifyLink = (url, company) => {
   if (ATS_HOSTS.test(host)) return "ats";
   if (SOCIAL_HOSTS.test(host)) return "social_or_short";
 
-  if (company) {
-    const token = companyToken(company);
-    const main = mainDomainLabel(host);
-    if (token.length >= 3 && main) {
-      // "acme" or "acme-corp" for "Acme Corp"; "acmecareers"/"acmejobs"/... as
-      // written (hyphenated look-alikes such as "acme-jobs" do not qualify).
-      const matches =
-        main.replace(/-/g, "") === token ||
-        COMPANY_HOST_SUFFIXES.some((suffix) => main === `${token}${suffix}`);
-      if (matches) return "company_domain";
-    }
-  }
+  if (hostMatchesCompany(host, company)) return "company_domain";
 
   return "other_domain";
 };

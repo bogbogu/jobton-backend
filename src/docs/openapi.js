@@ -92,8 +92,12 @@ const UNAUTHORIZED = failure("Missing, invalid or expired token, or the user no 
   ["userGone", "Not authorized. User no longer exists."],
 ]);
 
-const FORBIDDEN_ADMIN = failure("The token is valid but the user's role is not `admin` (the role is read from the database).", [
+const FORBIDDEN_ADMIN = failure("The token is valid but the user's role is neither `admin` nor `superadmin` (the role is read from the database).", [
   ["notAdmin", "Admin access required."],
+]);
+
+const FORBIDDEN_SUPERADMIN = failure("The token is valid but the user's role is not `superadmin`. A plain `admin` is refused (the role is read from the database).", [
+  ["notSuperAdmin", "Superadmin access required.", "FORBIDDEN_ROLE"],
 ]);
 
 const SERVER_ERROR = failure("Unexpected server error. The body only contains a generic `message`.", [
@@ -141,6 +145,7 @@ const SALARY_CURRENCIES = ["NGN", "USD"];
 const SALARY_PERIODS = ["hour", "month", "year"];
 const JOB_BADGES = ["featured", "verified", "urgent", "new"];
 const REVIEW_STATUSES = ["pending_review", "published", "rejected"];
+const USER_ROLES = ["user", "admin", "superadmin"];
 const LINK_CLASSES = ["ats", "company_domain", "form", "social_or_short", "other_domain", "none"];
 const AVAILABILITY = ["Available now", "Available next week", "Limited availability"];
 const HANDLE_PLATFORMS = ["LinkedIn", "X", "Instagram", "Portfolio", "WhatsApp"];
@@ -157,7 +162,11 @@ const jobOutputProperties = {
   id: { type: "string", example: "665f1c2e9b1e8a3f4c5d6e7f" },
   company: nullable({ type: "string" }),
   companySlug: nullable({ type: "string", description: "Slug of the company name; matches `GET /api/companies/{slug}` when a profile exists." }),
-  domain: { type: "string", description: "Company hostname, e.g. `flutterwave.com`. Empty string when unset." },
+  domain: {
+    type: "string",
+    description:
+      "Company hostname used for the logo, e.g. `flutterwave.com`. Empty string when unset. Ingested and approved jobs get it derived from how to apply: the apply email's domain, or the apply link's host when the company name is that host's main label or the email is on the same registrable domain. Never for chat/social/shortener/ATS/form/free-hosting hosts, public suffixes, non-public names or free-mail addresses. A domain an admin typed is never replaced.",
+  },
   logo_url: nullable({ type: "string", format: "uri" }),
   title: { type: "string" },
   location: nullable({ type: "string" }),
@@ -178,6 +187,9 @@ const jobOutputProperties = {
   qualification: { type: "string" },
   description: { type: "string" },
   responsibilities: { type: "array", items: { type: "string" } },
+  aboutCompany: { type: "string", description: "Optional short plain-text description of the employer. Empty string when the post has none." },
+  requirements: { type: "array", items: { type: "string" }, description: "Optional list of requirements. Empty array when not stated." },
+  benefits: { type: "array", items: { type: "string" }, description: "Optional list of benefits/perks. Empty array when not stated." },
   applicationLink: nullable({ ...HTTP_URL }),
   applyEmail: nullable({ type: "string", format: "email", description: "Set on ingested jobs only." }),
   applyPhone: nullable({ type: "string", description: "Normalized phone number (digits, optional leading `+`). Set on ingested jobs only." }),
@@ -212,6 +224,9 @@ const jobWritableProperties = {
   qualification: { type: "string", maxLength: 300 },
   description: { type: "string", maxLength: 10000 },
   responsibilities: { type: "array", items: { type: "string", maxLength: 500 } },
+  aboutCompany: { type: "string", maxLength: 2000, description: "Optional. Plain text; HTML tags are stripped." },
+  requirements: { type: "array", maxItems: 20, items: { type: "string", maxLength: 500 }, description: "Optional. At most 20 items." },
+  benefits: { type: "array", maxItems: 20, items: { type: "string", maxLength: 500 }, description: "Optional. At most 20 items." },
   applicationLink: {
     ...HTTP_URL,
     description:
@@ -275,7 +290,7 @@ const schemas = {
       firstName: { type: "string" },
       lastName: { type: "string" },
       email: { type: "string", format: "email" },
-      role: { type: "string", enum: ["user", "admin"] },
+      role: { type: "string", enum: USER_ROLES },
       isVerified: { type: "boolean" },
     },
   },
@@ -290,7 +305,7 @@ const schemas = {
       firstName: { type: "string" },
       lastName: { type: "string" },
       email: { type: "string", format: "email" },
-      role: { type: "string", enum: ["user", "admin"] },
+      role: { type: "string", enum: USER_ROLES },
       isVerified: { type: "boolean" },
     },
   },
@@ -360,6 +375,8 @@ const schemas = {
           reviewedBy: nullable({ type: "string", description: "Admin user id." }),
           reviewedAt: nullable({ type: "string", format: "date-time" }),
           rejectionReason: nullable({ type: "string", maxLength: 500 }),
+          restoredAt: nullable({ type: "string", format: "date-time", description: "When a superadmin last sent the job back to review." }),
+          restoredFromStatus: nullable({ type: "string", enum: ["rejected", "published"], description: "The status the job had before it was restored. The earlier review data is kept." }),
         },
       },
       extraction: {
@@ -383,6 +400,20 @@ const schemas = {
         description: "Send this back as `expectedUpdatedAt` when approving to detect concurrent edits.",
       },
     },
+  },
+
+  RestoreRequest: {
+    type: "object",
+    required: ["expectedUpdatedAt"],
+    properties: {
+      expectedUpdatedAt: {
+        type: "string",
+        format: "date-time",
+        description:
+          "REQUIRED. The `updatedAt` of the job version the superadmin looked at (from `GET /api/admin/jobs/{id}`). Missing or `null` fails with `400 EXPECTED_UPDATED_AT_REQUIRED`, checked before anything is read or written. If the job changed since (or the value is not a valid date), the call fails with `409 STALE`.",
+      },
+    },
+    example: { expectedUpdatedAt: "2026-03-04T10:15:30.000Z" },
   },
 
   RawPost: {
@@ -626,7 +657,7 @@ const tags = [
   { name: "Freelancers", description: "Freelancer directory (logged-in users only)." },
   { name: "Companies", description: "Company profiles." },
   { name: "Newsletter", description: "Newsletter subscription." },
-  { name: "Admin - Jobs", description: "Review queue: list, inspect, approve and reject jobs. Admin only." },
+  { name: "Admin - Jobs", description: "Review queue: list, inspect, approve and reject jobs. Admin or superadmin; restoring a job is superadmin only." },
   { name: "Admin - Telegram channels", description: "Manage the Telegram channels the ingestion job polls. Admin only." },
 ];
 
@@ -1376,7 +1407,7 @@ const paths = {
       tag: "Admin - Jobs",
       summary: "Approve and publish a pending job",
       description:
-        "Admin only. Optionally corrects fields (`edits`) and sets badges (`status`) in the same call. To publish, the merged job needs title, description, company, location, category and at least one of applicationLink, applyEmail or applyPhone, otherwise `400 MISSING_FIELDS` (`applyContact` in `missing` stands for the three apply fields); any other schema problem is `400 VALIDATION_ERROR` with a per-field `fields` map. The publish is atomic: it only succeeds if the job is still `pending_review` AND has not changed since it was read, so an owner edit made in between can never be published unseen (`409 STALE`). `expectedUpdatedAt` is REQUIRED so an admin can never publish a version they did not look at: send the `updatedAt` from `GET /api/admin/jobs/{id}` (missing or `null` is `400 EXPECTED_UPDATED_AT_REQUIRED`, checked before anything is written); if the job changed after that version, the call is `409 STALE`.",
+        "Admin or superadmin. Optionally corrects fields (`edits`; includes the optional `aboutCompany`, `requirements` and `benefits`, which are never required) and sets badges (`status`) in the same call. To publish, the merged job needs title, description, company, location, category and at least one of applicationLink, applyEmail or applyPhone, otherwise `400 MISSING_FIELDS` (`applyContact` in `missing` stands for the three apply fields); any other schema problem is `400 VALIDATION_ERROR` with a per-field `fields` map. If the job still has no `domain` after the edits, it is filled from the apply link or apply email when that points at the employer; a domain that is set is never replaced. The publish is atomic: it only succeeds if the job is still `pending_review` AND has not changed since it was read, so an owner edit made in between can never be published unseen (`409 STALE`). `expectedUpdatedAt` is REQUIRED so an admin can never publish a version they did not look at: send the `updatedAt` from `GET /api/admin/jobs/{id}` (missing or `null` is `400 EXPECTED_UPDATED_AT_REQUIRED`, checked before anything is written); if the job changed after that version, the call is `409 STALE`.",
       access: "bearer",
       parameters: [jobIdParam],
       body: requestBody(ref("ApproveRequest")),
@@ -1479,6 +1510,40 @@ const paths = {
         403: FORBIDDEN_ADMIN,
         404: jobNotFound,
         409: failure("The job is not pending review.", [["notPending", "Job is not pending review.", "NOT_PENDING"]]),
+      },
+    }),
+  },
+
+  "/api/admin/jobs/{id}/restore": {
+    post: operation({
+      tag: "Admin - Jobs",
+      summary: "Send a rejected or published job back to review (superadmin)",
+      description:
+        "Superadmin only (a plain `admin` gets `403 FORBIDDEN_ROLE`). Moves a job whose status is `rejected` or `published` back to `pending_review`, where it can be approved or rejected again. Nothing is wiped: the earlier reviewer, review time and rejection reason are kept, and the restore is recorded in `review.restoredAt` / `review.restoredFromStatus`. A restored published job is hidden from the public until it is approved again. `expectedUpdatedAt` is REQUIRED. The change is atomic: it only applies if the job still has the status that was read and has not changed since that version. The response carries the new `updatedAt`, which is the `expectedUpdatedAt` to send when approving.",
+      access: "bearer",
+      parameters: [jobIdParam],
+      body: requestBody(ref("RestoreRequest")),
+      responses: {
+        200: ok("The restored job (now `pending_review`).", {
+          type: "object",
+          properties: {
+            message: { type: "string", example: "Job restored to pending review." },
+            job: ref("AdminJob"),
+          },
+        }),
+        400: failure("`expectedUpdatedAt` is missing or null.", [
+          [
+            "expectedUpdatedAtRequired",
+            "expectedUpdatedAt is required: send the updatedAt of the job version you reviewed.",
+            "EXPECTED_UPDATED_AT_REQUIRED",
+          ],
+        ]),
+        403: FORBIDDEN_SUPERADMIN,
+        404: jobNotFound,
+        409: failure("The job is already pending review, or it changed after it was loaded.", [
+          ["notRestorable", "Job is already pending review.", "NOT_RESTORABLE"],
+          ["stale", "This job changed after you opened it. Reload it and try again.", "STALE"],
+        ]),
       },
     }),
   },
@@ -1599,7 +1664,7 @@ const openapi = {
       "**Things worth knowing**",
       "- Only *published* jobs are public. A job posted by a non-admin is saved as `pending_review` and stays hidden until an admin approves it in `/api/admin/jobs`.",
       "- When the owner of a published job edits it, it goes back to review.",
-      "- Admin endpoints need an account whose role is `admin`; others get `403`.",
+      "- Admin endpoints need an account whose role is `admin` or `superadmin`; others get `403`. Restoring a job to review needs `superadmin` (`403 FORBIDDEN_ROLE` for a plain admin). Nobody can obtain either role through the API.",
       "- Errors look like `{ \"message\": \"...\" }`, with an extra machine-readable `\"error\": \"CODE\"` where the frontend needs to branch on it.",
     ].join("\n"),
   },
