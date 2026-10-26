@@ -6,6 +6,13 @@
 // mounted route is missing here, or if this file describes a route that does
 // not exist.
 
+import {
+  CONTACT_GLOBAL_PER_HOUR,
+  CONTACT_LIMITS,
+  CONTACT_RATE_LIMITS,
+  CONTACT_RETENTION_DAYS,
+} from "../utils/contact.utils.js";
+
 // ---------------------------------------------------------------------------
 // Small builders (keep the spec below readable)
 // ---------------------------------------------------------------------------
@@ -307,6 +314,43 @@ const schemas = {
       email: { type: "string", format: "email" },
       role: { type: "string", enum: USER_ROLES },
       isVerified: { type: "boolean" },
+    },
+  },
+
+  ContactRequest: {
+    type: "object",
+    required: ["name", "email", "subject", "message"],
+    properties: {
+      name: {
+        type: "string",
+        minLength: 1,
+        maxLength: CONTACT_LIMITS.nameMax,
+        description: "Control characters and line breaks are removed and whitespace is collapsed.",
+      },
+      email: {
+        type: "string",
+        format: "email",
+        maxLength: CONTACT_LIMITS.emailMax,
+        description: "Lower-cased and trimmed. Printable ASCII only (no internationalised domains). Used as the Reply-To of the email.",
+      },
+      subject: {
+        type: "string",
+        minLength: 1,
+        maxLength: CONTACT_LIMITS.subjectMax,
+        description: "Control characters and line breaks are removed and whitespace is collapsed.",
+      },
+      message: {
+        type: "string",
+        minLength: 1,
+        maxLength: CONTACT_LIMITS.messageMax,
+        description:
+          "Plain text. Line breaks are kept; HTML tags and control characters are removed. The limit applies after cleaning.",
+      },
+      reference_code: {
+        type: "string",
+        description:
+          "Honeypot. Must be left empty (hide the input from people). If it has any content the API answers exactly as for a real message, but nothing is saved or sent.",
+      },
     },
   },
 
@@ -657,6 +701,7 @@ const tags = [
   { name: "Freelancers", description: "Freelancer directory (logged-in users only)." },
   { name: "Companies", description: "Company profiles." },
   { name: "Newsletter", description: "Newsletter subscription." },
+  { name: "Contact", description: "Public contact form." },
   { name: "Admin - Jobs", description: "Review queue: list, inspect, approve and reject jobs. Admin or superadmin; restoring a job is superadmin only." },
   { name: "Admin - Telegram channels", description: "Manage the Telegram channels the ingestion job polls. Admin only." },
 ];
@@ -1315,6 +1360,29 @@ const paths = {
           properties: { message: { type: "string", example: "Subscribed successfully." } },
         }),
         400: failure("Missing or invalid email.", [["invalidEmail", "Please provide a valid email address."]]),
+      },
+    }),
+  },
+
+  // ---- Contact ------------------------------------------------------------
+  "/api/contact": {
+    post: operation({
+      tag: "Contact",
+      summary: "Send a message to the Jobton team",
+      description: `Public. Every field must be a string (otherwise \`400 INVALID_INPUT\`). Limits after trimming and cleaning: name 1-${CONTACT_LIMITS.nameMax}, email valid and at most ${CONTACT_LIMITS.emailMax}, subject 1-${CONTACT_LIMITS.subjectMax}, message 1-${CONTACT_LIMITS.messageMax} characters. The message is saved and then emailed to the Jobton inbox (Reply-To is the visitor); the answer is \`201\` as long as it was saved, even if the email could not be sent. A filled-in honeypot field \`reference_code\` gets the same \`201\` without anything being saved or sent. Rate limited to ${CONTACT_RATE_LIMITS.perIp} requests per IP per hour and ${CONTACT_RATE_LIMITS.perEmail} messages per email address per hour (\`429 RATE_LIMITED\`). Across all visitors, once ${CONTACT_GLOBAL_PER_HOUR} messages were saved in the last hour, new messages are still saved (\`emailStatus: skipped\`) and answered with \`201\` but no email is sent, to protect the shared email quota. The saved copy has no IP address or user agent and is deleted after ${CONTACT_RETENTION_DAYS} days. The recipient address is never returned.`,
+      access: "public",
+      body: requestBody(ref("ContactRequest")),
+      responses: {
+        201: ok("Message received.", {
+          type: "object",
+          properties: { message: { type: "string", example: "Message received." } },
+        }),
+        400: failure("A field is not a string, or fails validation (`fields` maps field to a fixed message).", [
+          ["invalidInput", "Invalid request payload.", "INVALID_INPUT"],
+          ["validation", "Validation failed. Email is required.", "VALIDATION_ERROR"],
+        ]),
+        429: RATE_LIMITED,
+        500: SERVER_ERROR,
       },
     }),
   },

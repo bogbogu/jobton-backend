@@ -1,5 +1,6 @@
 import { Resend } from "resend";
 import validator from "validator";
+import { DEFAULT_CONTACT_INBOX, isContactEmail } from "./contact.utils.js";
 
 const REQUIRED_EMAIL_ENV_VARS = [
   "RESEND_API_KEY",
@@ -197,5 +198,41 @@ export const sendResetPasswordEmail = async ({
     The Jobton Team
   </p>
 </div>`,
+  });
+};
+
+// Inbox that receives contact-form messages: CONTACT_INBOX_EMAIL when it is a
+// plain valid address, otherwise the default. Optional on purpose: it is not part
+// of the required email config, so it can never disable the other emails.
+const getContactInbox = () => {
+  const configured = getEnvValue("CONTACT_INBOX_EMAIL");
+  return configured && isContactEmail(configured) ? configured : DEFAULT_CONTACT_INBOX;
+};
+
+// Flattens to one line: a last line of defence against header injection (the
+// controller has already cleaned name and subject).
+// eslint-disable-next-line no-control-regex
+const toSingleLine = (value) => String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim();
+
+// Plain text on purpose: the visitor's words are never rendered as HTML. Sent
+// from our own address (never the visitor's), with the visitor only in Reply-To.
+// No BCC/CC. The body does not use a "From: name <email>" line, which a visitor
+// could make look like a real sender: the address is labelled unverified and
+// "<", ">" and "@" are removed from the name in the body.
+const toBodyName = (value) => toSingleLine(value).replace(/[<>@]/g, "").replace(/ {2,}/g, " ").trim();
+
+export const sendContactMessageEmail = async ({ name, email, subject, message }) => {
+  const { fromEmail } = getEmailConfig();
+
+  if (!isContactEmail(email)) {
+    throw new Error("A valid sender email address is required.");
+  }
+
+  return sendOrThrow({
+    from: fromEmail,
+    to: [getContactInbox()],
+    replyTo: email,
+    subject: `[Jobton contact] ${toSingleLine(subject)}`,
+    text: `Name: ${toBodyName(name)}\nReply-to (unverified): ${email}\n\n${String(message ?? "")}`,
   });
 };
