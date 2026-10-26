@@ -1,3 +1,5 @@
+import { contactsAbsentFrom } from "./extractJob.js";
+
 // Scam / quality signals computed in PLAIN CODE from the post text and the
 // already-sanitized job. Nothing here comes from the LLM, so a model that has
 // been talked into calling a scam "legitimate" cannot hide these. The strings
@@ -13,6 +15,14 @@ export const RED_FLAGS = Object.freeze({
   SENSITIVE_DATA: "sensitive_data_requested",
   PUNYCODE: "punycode_host",
   FREE_MAIL: "free_mail_contact_for_named_company",
+  FROM_IMAGE: "from_image",
+  CONTACT_FROM_IMAGE: "contact_from_image",
+});
+
+// Human-readable text for the flags that need an explanation in the admin UI.
+export const RED_FLAG_MESSAGES = Object.freeze({
+  [RED_FLAGS.FROM_IMAGE]: "Read from an image. Check names, numbers and links against the picture.",
+  [RED_FLAGS.CONTACT_FROM_IMAGE]: "Contact details come from an image. Check them against the picture.",
 });
 
 export const FREE_MAIL_DOMAINS = new Set([
@@ -67,7 +77,18 @@ const hasPunycodeHost = (value) => {
   }
 };
 
-export function computeRedFlags({ job = {}, text = "", linkClass = "none" } = {}) {
+// `text` is everything the extractor was given. For a post that was read from
+// an image it is the caption plus the transcript; then `caption`/`links` (the
+// caption alone and its anchors) and `transcript` are passed as well, so the
+// image-specific flags can be computed. Both are plain-code checks.
+export function computeRedFlags({
+  job = {},
+  text = "",
+  linkClass = "none",
+  caption,
+  links = [],
+  transcript = "",
+} = {}) {
   const flags = [];
   const body = String(text ?? "");
   const hasLink = Boolean(job.applicationLink);
@@ -98,6 +119,13 @@ export function computeRedFlags({ job = {}, text = "", linkClass = "none" } = {}
   if (hasEmail && job.company) {
     const domain = String(job.applyEmail).split("@").pop().toLowerCase();
     if (FREE_MAIL_DOMAINS.has(domain)) flags.push(RED_FLAGS.FREE_MAIL);
+  }
+
+  if (String(transcript ?? "").trim()) {
+    flags.push(RED_FLAGS.FROM_IMAGE);
+
+    // A contact that is not in the caption can only have come from the picture.
+    if (contactsAbsentFrom(job, caption ?? "", links).length > 0) flags.push(RED_FLAGS.CONTACT_FROM_IMAGE);
   }
 
   return flags;

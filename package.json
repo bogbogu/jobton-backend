@@ -10,7 +10,8 @@
     "dev": "nodemon app.js",
     "seed": "node scripts/seed.js",
     "ingest": "node scripts/ingest.js",
-    "backfill:sections": "node scripts/backfill-sections.js"
+    "backfill:sections": "node scripts/backfill-sections.js",
+    "requeue:images": "node scripts/requeue-image-posts.js"
   },
   "repository": {
     "type": "git",

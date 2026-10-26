@@ -357,6 +357,13 @@ const schemas = {
           messageId: nullable({ type: "integer" }),
           url: nullable({ type: "string", format: "uri" }),
           postedAt: nullable({ type: "string", format: "date-time" }),
+          imageUrls: {
+            type: "array",
+            maxItems: 3,
+            items: { type: "string", format: "uri" },
+            description:
+              "Admin only (the public job shape has no such field). https URLs of the source post's photos on Telegram's CDN (`cdnN.cdn-telegram.org` / `cdnN.telesco.pe`), at most 3; `[]` when the post had none or the job predates this field. Telegram may expire these links. Show them as images next to the job so a reviewer can compare the extracted details with the picture.",
+          },
         },
       },
       employmentType: nullable({ type: "string", enum: EMPLOYMENT_TYPES }),
@@ -386,7 +393,23 @@ const schemas = {
           model: { type: "string" },
           corrections: { type: "array", items: { type: "string" } },
           modelNotes: { type: "array", items: { type: "string" }, description: "The LLM's own commentary. Advisory and untrusted." },
-          redFlags: { type: "array", items: { type: "string" } },
+          redFlags: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Warning codes computed in code, never by the model. Two apply to jobs read from a picture: `from_image` (\"Read from an image. Check names, numbers and links against the picture.\") and `contact_from_image` (\"Contact details come from an image. Check them against the picture.\"; the apply link, email or phone is not in the caption).",
+          },
+          fromImage: {
+            type: "boolean",
+            description: "`true` when the text given to the extractor included a transcript of the post's image. Set in code.",
+          },
+          imageTextChars: { type: "integer", description: "Length of that transcript. Absent when `fromImage` is false." },
+          imageText: {
+            type: "string",
+            maxLength: 4000,
+            description:
+              "Admin only. The cleaned text the model copied from the post's picture(s), as plain text (never HTML); `\"\"` when the job was not read from an image. Show it to reviewers so tiny or hidden flyer text can be checked. The public job shape never includes it.",
+          },
           linkClass: { type: "string", enum: LINK_CLASSES },
           missing: { type: "array", items: { type: "string" } },
           droppedFields: { type: "array", items: { type: "string" } },
