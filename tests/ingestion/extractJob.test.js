@@ -307,4 +307,19 @@ describe("extractJobsFromPost", () => {
     expect(error.message).not.toContain("sk-ant");
     expect(error.cause).toBeUndefined();
   });
+
+  it("names a cut-off or unreadable reply without echoing any of it", async () => {
+    const sdkError = new Error("Failed to parse structured output: Error: Unterminated string in JSON at position 5260");
+    const client = { messages: { parse: async () => { throw sdkError; } } };
+    const error = await extractJobsFromPost({ text: "x", client, model: "m" }).catch((e) => e);
+    expect(error.message).toBe("LLM request failed (unreadable output).");
+    expect(error.cause).toBeUndefined();
+  });
+
+  it("allows long multi-vacancy replies by default", async () => {
+    let seen;
+    const client = { messages: { parse: async (args) => { seen = args; return { stop_reason: "end_turn", parsed_output: { isJobPost: false, jobs: [] }, usage: { input_tokens: 1, output_tokens: 1 } }; } } };
+    await extractJobsFromPost({ text: "x", client, model: "m" });
+    expect(seen.max_tokens).toBeGreaterThanOrEqual(6000);
+  });
 });

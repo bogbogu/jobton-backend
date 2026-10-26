@@ -34,7 +34,7 @@ export function getConfig() {
     requestTimeoutMs: 10_000,
     maxResponseBytes: 2 * 1024 * 1024,
     maxPostTextChars: 4000,
-    llmMaxTokens: 2000,
+    llmMaxTokens: 6000,
   };
 
   Object.defineProperty(config, "anthropicApiKey", {
